@@ -1,0 +1,132 @@
+{
+  "project": "mbzuai-llm/Hilbert-RowNorm",
+  "runs": [
+    {
+      "method": "adamw",
+      "metric_history_sha256": "489210dfb9a43baa7811f061d6ef890e58868deaf6bfbcf809e518c36194a35d",
+      "model": "190m",
+      "run_id": "hrn190a0",
+      "seed": 0
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "8bfd721740a29403aafde66f7efd729c551195bcba75f788bd00eabaef2c78f2",
+      "model": "190m",
+      "run_id": "hrn190a1",
+      "seed": 1
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "bca40930a50d7ff18654c45ff3f495a7f9c0dde5456b83cecd10b3142736de8c",
+      "model": "190m",
+      "run_id": "hrn190a2",
+      "seed": 2
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "fdbad19818f1dd279fd5e72ec16a8b05c019c14e9f3cb8ad2252f0a0e02beb50",
+      "model": "190m",
+      "run_id": "hrn190r0",
+      "seed": 0
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "ef93ebe69aa36df1db93162724456f233c8b928a8d0e3b8edf1668272594f666",
+      "model": "190m",
+      "run_id": "hrn190r1",
+      "seed": 1
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "9f6e2e58ea431aae14aa693c869bac9ee579be3065896e1dc01d3b17ebed2565",
+      "model": "190m",
+      "run_id": "hrn190r2",
+      "seed": 2
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "a61d9896518ed7ff6e2ac553e471fd9e7af001e08df746f07ea74941ae6bef89",
+      "model": "380m",
+      "run_id": "hrn380a0",
+      "seed": 0
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "a3481d48dec73bbb8ebc94df9a71f0721e1c97599ffd8ab74140da33e31dcb45",
+      "model": "380m",
+      "run_id": "hrn380a1",
+      "seed": 1
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "8dcfdf3022a16fdf0a982b864d054fae0e58f2909468dedd08d946ec88e53b26",
+      "model": "380m",
+      "run_id": "hrn380a2",
+      "seed": 2
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "6386880aa69e035dfc85e6d54da0ad7346f9dc4388e12911c7d045b240979290",
+      "model": "380m",
+      "run_id": "hrn380r0",
+      "seed": 0
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "0174727b4a679009cda770072b6ecaa01b2d1698a46c1bf74239309908326bb3",
+      "model": "380m",
+      "run_id": "hrn380r1",
+      "seed": 1
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "4b6561ab9fd250e5c7ba0e7a6c262898df1df3534cb22e70fdf478dc57080263",
+      "model": "380m",
+      "run_id": "hrn380r2",
+      "seed": 2
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "7c1394638a7a0f70b7154f7ca107b21024f47d6fc786c3e4b4018d16618b8ce3",
+      "model": "640m",
+      "run_id": "hrn640a0",
+      "seed": 0
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "3495ef312edfff6a5aa206e266dccd70ba89f7fd61a2ee54e7746f03227b7590",
+      "model": "640m",
+      "run_id": "hrn640a1",
+      "seed": 1
+    },
+    {
+      "method": "adamw",
+      "metric_history_sha256": "0d3d3a59fa581e48ab78c6be1e8eb62ee703cff19141c5c06f679b83e4f9dedc",
+      "model": "640m",
+      "run_id": "hrn640a2",
+      "seed": 2
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "80edec95b39e57a411137b3f942c2a6fde9a846876a199e19ca72e35bec6a8b1",
+      "model": "640m",
+      "run_id": "hrn640r0",
+      "seed": 0
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "e862f14e7423a4852d8ed76ade0bd9eb6c52c07333635eee49c1f802d06a451d",
+      "model": "640m",
+      "run_id": "hrn640r1",
+      "seed": 1
+    },
+    {
+      "method": "rownorm",
+      "metric_history_sha256": "ba6f551015d0cbd3f3ceb3a73aa5658b1634461df139623a6e2e14b478343d36",
+      "model": "640m",
+      "run_id": "hrn640r2",
+      "seed": 2
+    }
+  ],
+  "schema_version": 3
+}
