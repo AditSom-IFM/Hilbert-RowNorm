@@ -3,9 +3,9 @@
 \usepackage[utf8]{inputenc}
 \usepackage{amsmath,amssymb,mathtools}
 \usepackage{microtype}
+\usepackage{sansmath}
 \usepackage{xcolor}
 \usepackage{booktabs}
-\usepackage{tikz}
 \usepackage{xurl}
 \usepackage{placeins}
 
@@ -17,43 +17,116 @@
 \newcommand{\varnorm}[1]{\left\lVert #1\right\rVert_{\mathrm{var}}}
 \DeclareMathOperator{\softmax}{softmax}
 \DeclareMathOperator{\rank}{rank}
-\DeclareMathOperator{\Dist}{dist}
+
 
 \title{Toward a First-Principles Update Geometry
 for the Language-Model Head}
+
 
 \optauthor{%
 \Name{Anonymous Authors}\\
 \addr Anonymous Institution}
 
+
 \begin{document}
+
 
 \maketitle
 
+
 \begin{abstract}
-We derive an update geometry for the language-model head by treating its linear map and softmax as a single module. Under Hilbert's projective distance, the largest change induced by an update $S$ over hidden states with $\norm{h}_2\leq H$ is $H D(S)$, where $D(S)=\max_{i<j}\norm{s_i-s_j}_2$ is the Euclidean diameter of its token rows. The corresponding steepest descent problem admits an exact minimum-tension characterization through vector-valued Kantorovich--Rubinstein duality. Its direct complete-graph formulation contains one $d$-dimensional variable for every token pair, or $O(V^2d)$ scalar variables. We instead require all update rows to lie in a ball of radius $\eta/2$. The solution is projected RowNorm, an $O(Vd)$ update that satisfies the original diameter bound and retains at least $1/\sqrt{2}$ of the optimal instantaneous linear decrease.
-Across 190M, 380M, and 640M models using Nesterov Muon for the backbone, the mean final validation losses of the RowNorm and AdamW head recipes differ by at most $0.0153$. With RowNorm, mean final step diameters and empirical per step Hilbert RMS perturbations are lower by factors of about $50$ and $15$, respectively.
+Muon motivates designing optimizer geometry around the function of each parameter block and uses the spectral norm for hidden linear layers.
+For the language-model head, the spectral norm is not a faithful measure of functional change.
+Softmax removes shared logit shifts, whereas the spectral norm can assign arbitrarily large size to updates that change no output probability.
+We therefore treat the LM head and softmax as one module and derive an update geometry for their composition.
+Hilbert's projective distance respects this invariance as it measures the largest change in pairwise log odds.
+For an update $S$ with token rows $s_i^\top$, we show that the largest Hilbert distance over $\norm{h}_2\leq H$ is exactly $H D(S)$, where $D(S)=\max_{i<j}\norm{s_i-s_j}_2$ is the Euclidean row diameter. This diameter replaces the spectral norm in the resulting Muon-style steepest descent problem.
+An exact solution is possible, but its direct formulation contains one $d$-dimensional vector variable for every token pair. For a vocabulary size of approximately $50$k, this means more than one billion token pairs, making the calculation impractical at every training step. We instead impose a stronger common-ball constraint and derive projected RowNorm as an $O(Vd)$ solution.
+For the exact RowNorm oracle, we prove that its first-order decrease is at least $1/\sqrt{2}$ of the exact diameter-constrained optimum.
+With Muon on the backbone, experiments across three seeds at 190M, 380M, and 640M parameters show that RowNorm reduces mean final step diameters and empirical Hilbert RMS perturbations by factors of $45$--$60$ and $12$--$15$, respectively, with only a
+$0.0057$--$0.0153$ increase in mean final validation loss.
 \end{abstract}
+
 
 \section{Introduction}
 
-A language-model head (LM head) with weights $U\in\R^{V\times d}$ maps a hidden state $h\in\R^d$ to the probability distribution $p_U(h)=\softmax(Uh)$ over $V$ tokens. With the inception of Muon, recent work has shifted attention from coordinate-wise optimization toward updates that respect the geometry and function of each parameter block \citep{bernstein2024old, bernstein2024modular, large2024scalable}. For an update $S$ to a hidden linear layer, $\norm{S}_{\mathrm{op}}=\sup_{\norm{h}_2\leq1}\norm{Sh}_2$ measures the largest change that the update can produce in the layer's activation. Muon constructs its update using this spectral geometry \citep{liu2025muon, jordan2024muon, pethick2025trainingdeeplearningmodels}. The LM head suggests the same question, but with a different output. Its logits are immediately passed through softmax, so the relevant mathematical object is a probability distribution rather than a Euclidean activation. This raises a natural question:
+A language-model head (LM head) with weights $U\in\R^{V\times d}$ maps a hidden state $h\in\R^d$ to the probability distribution $p_U(h)=\softmax(Uh)$ over $V$ tokens. With the inception of Muon, recent work has shifted attention from coordinate-wise optimization toward updates that respect the geometry and function of each parameter block \citep{bernstein2024old, bernstein2024modular, large2024scalable}.
+For an additive update to a hidden linear layer, the spectral norm measures the largest activation change that the update can produce on an input of unit norm.
+Muon constructs its update using this spectral geometry \citep{liu2025muon, jordan2024muon, pethick2025trainingdeeplearningmodels}.
 
+The spectral norm, however, does not faithfully measure the function of the LM head.
+Its logits are immediately passed through softmax, so the relevant mathematical object is a probability distribution rather than a Euclidean activation.
+Softmax removes any shift shared by all logits, whereas the spectral norm does not. To see this, let $a\in\R^d$ and consider the update
+$S=\one a^\top\in\R^{V\times d}$, whose rows are all identical. For every hidden state $h$,
+\[
+p_{U+S}(h)
+=
+\softmax\!\left(Uh+(a^\top h)\one\right)
+=
+p_U(h).
+\]
+Thus, $U$ and $U+S$ produce exactly the same probability distribution for every input. Under softmax cross entropy, the update also changes neither the loss nor the gradient passed to the backbone.
+Nevertheless, $\norm{S}_{\mathrm{op}}=\sqrt{V}\norm{a}_2$ can be arbitrarily large. A trust region intended to measure functional change should assign zero size to an update that the complete module removes exactly.
+The spectral norm fails this requirement for the composed LM head and softmax module.
+This distinction is consistent with current practice as standard Muon recipes typically leave the LM head in the care of AdamW \citep{loshchilov2018decoupled,jordan2024muon}.
+
+Each output coordinate of the LM head corresponds to a particular vocabulary token.
+\citet{lau2026symmetry} formalize this token structure together with softmax's invariance to shared logit shifts and derive an update specialized to the LM head.
+These observations motivate the central question of our paper:
 \begin{center}
-    \emph{Do we consider the change in the probability distribution instead of the change in logits?}
+    \emph{Should the size of an LM head update be measured by its effect on
+    the logits, or by its effect on the probability distribution after
+    softmax?}
 \end{center}
+We argue for the latter. We seek a distance on probability
+distributions whose induced update geometry ignores shared logit shifts.
+Hilbert's projective distance \citep{cohen2023hyperbolic}, formally defined in Section~\ref{sec:hilbert}, is a natural choice.
+It measures the largest change in pairwise log odds, and shared logit shifts cancel from every such comparison. For an additive update $S$ with rows $s_i^\top$, we show that
 
-The purpose of this paper is to explore this question. We seek a distance measure between probability distributions and the geometry it induces on LM head updates.
-Muon is typically not applied to the LM head. Hidden matrices have feature representation on both axes, for which bi-orthogonal symmetry motivates a spectral update. In an LM head, the rows represent tokens, admitting permutations rather than arbitrary orthogonal mixing. \citet{lau2026symmetry} show that a centered one-sided polar update remains compatible with these symmetries, so Muon is admissible but not uniquely selected by the structure of the LM head. Standard Muon recipes consequently leave the embedding and LM head in the care of AdamW \citep{jordan2024muon}.
-We proceed to choose Hilbert's projective distance \citep{cohen2023hyperbolic}, denoted by $\mathcal{H}$ to build an update for the LM head. It measures the largest change in pairwise log odds and respects the invariance of softmax to common logit shifts. For an update $S$ with rows $s_i^\top$, we show that
+
 \[
 \sup_{\norm{h}_2\le H} \mathcal{H}\!\left(p_{U+S}(h), p_U(h)\right) = H\max_{i<j}\norm{s_i - s_j}_2
 \]
-Thus, the functional size of an LM head update is the Euclidean diameter of its row cloud. This diameter defines our steepest descent problem: among all the updates with bounded row diameter, choose the one that gives the largest instantaneous decrease in first-order loss.
-The exact problem admits a vector-flow characterization. In particular, $\mathcal T(G)$ is the least total Euclidean magnitude of pairwise flows whose net flow at each token equals its gradient row. Finite vector-valued Kantorovich--Rubinstein duality then shows that the optimal first-order decrease under $D(S)\leq\eta$ is $\eta\mathcal T(G)$ \citep{ciosmak2021optimaltransportvectormeasures}.
-The direct flow formulation introduces a possible vector flow between every pair of tokens, making it impractical to solve directly at vocabulary scale. We therefore impose a stronger condition: all rows of the update must lie inside a ball of radius $\eta/2$. This guarantees that the diameter of the row cloud is at most $\eta$, thereby satisfying the original diameter bound. Its solution is the projected RowNorm \citep{lau2026symmetry}. The update costs $O(Vd)$, requiring no pairwise storage, and retains at least $1/\sqrt{2}$ of the optimal instantaneous linear decrease.
+Writing $D(S)=\max_{i<j}\norm{s_i-s_j}_2$, the identity above says that the functional size of an LM head update is the Euclidean diameter of its rows.
+Let $G=\nabla_U\mathcal L$. For softmax cross entropy, $\one^\top G=0$. For a small update $S$, $\mathcal L(U+S) = \mathcal L(U)+\inner{G}{S}_F+o(\norm{S}_F)$,
+where $\inner{G}{S}_F=\operatorname{tr}(G^\top S)$. For a diameter bound $\eta$, the corresponding steepest descent problem is therefore
+\[
+S^\star\in
+\arg\min_{D(S)\leq\eta}
+\inner{G}{S}_F.
+\]
+This has the same linear minimization form as the problem underlying Muon.
+Muon constrains the spectral norm of the update; here, Hilbert distance and softmax induce the row diameter constraint.
+The vector-valued Kantorovich--Rubinstein duality gives an exact vector-flow characterization of the optimal value
+\citep{ciosmak2021optimaltransportvectormeasures, robertson2025generalizationwassersteindistancebeckmann}.
+Appendix~\ref{app:diameter-duality} specializes this result to the LM head and gives a complete proof.
+
+Unfortunately, the direct flow formulation introduces one $d$-dimensional variable for each of the $\binom{V}{2}$ token pairs, making it unsuitable for use at every training step. We therefore solve a more restrictive problem by requiring all update rows to lie in a common ball:
+\[
+\min_{S,\,\zeta\in\R^d}
+\inner{G}{S}_F
+\qquad\text{subject to}\qquad
+\max_i\norm{s_i-\zeta}_2\leq\frac{\eta}{2}.
+\]
+Any two rows in this ball are at most $\eta$ apart, so every feasible update also satisfies the original diameter bound.
+One centered solution of this problem is projected RowNorm, the same update derived from softmax symmetries by \citet{lau2026symmetry}.
+It can be computed in $O(Vd)$ time without constructing token pairs.
+Equation~\ref{eq:rownorm-guarantee} shows that projected RowNorm achieves at least $1/\sqrt{2}$ of the optimal first-order decrease under the original diameter constraint. The proof is provided in Appendix~\ref{app:rownorm-proof}.
+
 Throughout, we study an untied LM head with no bias and softmax cross entropy, assuming that no other loss term depends on its weights.
-Across 190M, 380M, and 640M models, RowNorm is within $0.0153$ of AdamW in mean final validation loss with substantially smaller mean final step diameters and empirical per step Hilbert perturbations.
+Across 190M, 380M, and 640M models, RowNorm's mean final validation loss is at most $0.0153$ higher than AdamW's, while its optimizer increments have substantially smaller step diameters and empirical per step Hilbert perturbations. Figure~\ref{fig:overview-640m} previews the empirical comparison at our largest model scale. Complete experiments and details are provided in Appendix~\ref{app:experiments}.
+
+
+\begin{figure*}[!ht]
+\centering
+\includegraphics[width=.32\textwidth]{Plots/640M/loss_vs_training_tokens.pdf}\hfill
+\includegraphics[width=.32\textwidth]{Plots/640M/diameter_vs_training_tokens.pdf}\hfill
+\includegraphics[width=.32\textwidth]{Plots/640M/hilbert_perturbation_vs_training_tokens.pdf}
+\caption{\textbf{RowNorm vs AdamW at 640M parameters.}
+Replacing the AdamW LM head recipe with RowNorm increases final validation loss by $0.0057$, while reducing the final row diameter and empirical per step Hilbert RMS perturbation by factors of $59.5$ and $15.2$, respectively.}
+\label{fig:overview-640m}
+\end{figure*}
+
 
 \section{Hilbert distance}
 \label{sec:hilbert}
@@ -67,6 +140,7 @@ $\Delta_{V-1}^{\circ}
 \label{eq:hilbert-definition}
 \end{equation}
 
+
 To interpret equation~\ref{eq:hilbert-definition}, let \(a_i=\log\frac{p_i}{q_i}\). The difference between two coordinates is \(a_i-a_j=\log\frac{p_i}{q_i}-\log\frac{p_j}{q_j}=\log\frac{p_i}{p_j}-\log\frac{q_i}{q_j}\). Since the distance between the largest and smallest coordinates is the largest absolute difference between any two coordinates, \(\max_i a_i-\min_i a_i=\max_{i,j}\abs{a_i-a_j}\). Therefore,
 \begin{equation}
 \boxed{\mathcal{H}(p,q)=\max_{i,j}\abs{\log\frac{p_i}{p_j}-\log\frac{q_i}{q_j}}}
@@ -78,8 +152,10 @@ e^{-\varepsilon}\leq\frac{p_i/p_j}{q_i/q_j}\leq e^{\varepsilon}.
 \)
 Thus, an upper bound on the Hilbert distance gives a simultaneous multiplicative bound on the change of every pairwise probability ratio. This property makes Hilbert distance useful for the LM head. It measures relative changes between tokens, rather than the absolute movement of individual probability coordinates.
 
+
 \paragraph{Softmax and Hilbert distance.}
 \label{sec:softmax}
+
 
 Let \(p=\softmax(z)\) and \(q=\softmax(z')\) for two logit vectors $z,z'\in\R^V$. Softmax satisfies \(\frac{p_i}{p_j}=\frac{\exp(z_i)}{\exp(z_j)}=\exp(z_i-z_j)\), and therefore \(\log\frac{p_i}{p_j}=z_i-z_j\). Similarly, \(\log\frac{q_i}{q_j}=z_i'-z_j'\). Substituting these expressions into the pairwise form of Hilbert distance gives \(\mathcal{H}(p,q)=\max_{i,j}\abs{(z_i-z_j)-(z_i'-z_j')}=\max_{i,j}\abs{(z_i-z_i')-(z_j-z_j')}\). For a vector $x\in\R^V$, define its variation seminorm\footnote{This is a variation seminorm on $\R^V$ because it assigns zero size to every constant vector. It becomes a norm after logit vectors that differ by a common constant are identified.} by \(\varnorm{x}=\max_i x_i-\min_i x_i\). Since \(\max_{i,j}\abs{x_i-x_j}=\max_i x_i-\min_i x_i\), equation~\ref{eq:hilbert-log-odds} becomes
 \begin{equation}
@@ -92,12 +168,12 @@ The variation norm also ignores common logit shifts \(\varnorm{x+c\one}=\varnorm
 
 \paragraph{Why choose Hilbert distance?}
 
-Hilbert distance surprisingly connects with the Cross Entropy (CE) loss in addition to the softmax function. For a probability vector $p$, let $\mathcal{L}_c(p) = -\log p_c$ denote the CE loss when token $c$ is the target. For two distributions $p$ and $q$, the change in loss is \(\Delta\ell_c \coloneq \mathcal{L}_c(p) - \mathcal{L}_c(q) = -\log p_c + \log q_c = \log \frac{q_c}{p_c}\). We can rewrite Hilbert distance to show \(\mathcal{H}(p, q) = \max_{i, j} \left|\log \frac{p_i}{q_i} - \log \frac{p_j}{q_j} \right| = \max_{i, j} \left| \Delta\ell_i - \Delta\ell_j \right|\). This leads us directly to
+Hilbert distance surprisingly connects with the Cross Entropy (CE) loss in addition to the softmax function. For a probability vector $p$, let $\mathcal{L}_c(p) = -\log p_c$ denote the CE loss when token $c$ is the target. For two distributions $p$ and $q$, the change in loss is \(\Delta\ell_c \coloneqq \mathcal{L}_c(p) - \mathcal{L}_c(q) = -\log p_c + \log q_c = \log \frac{q_c}{p_c}\). We can rewrite Hilbert distance to show \(\mathcal{H}(p, q) = \max_{i, j} \left|\log \frac{p_i}{q_i} - \log \frac{p_j}{q_j} \right| = \max_{i, j} \left| \Delta\ell_i - \Delta\ell_j \right|\). This leads us directly to
 \[
 \mathcal{H}(p, q) = \max_c \Delta\ell_c - \min_c \Delta\ell_c = \max_c\left( \mathcal{L}_c(p) - \mathcal{L}_c(q) \right) - \min_c\left( \mathcal{L}_c(p) - \mathcal{L}_c(q) \right)
 \]
 
-Hilbert distance can be thought of as the largest difference between the change in CE losses of two possible target tokens. Moreover, since $p$ and $q$ are probability vectors summing to $1$, there must exist some $c, c'$ for which $q_c/p_c \geq 1$ and $q_{c'}/p_{c'} \leq 1$. This implies \(\min_c \Delta\ell_c \leq 0 \leq \max_c \Delta\ell_c\). It follows that for every target $c$,
+Hilbert distance can be thought of as the largest difference between the CE loss changes of two possible target tokens. Moreover, since $p$ and $q$ are probability vectors summing to $1$, there must exist some $c, c'$ for which $q_c/p_c \geq 1$ and $q_{c'}/p_{c'} \leq 1$. This implies \(\min_c \Delta\ell_c \leq 0 \leq \max_c \Delta\ell_c\). It follows that for every target $c$,
 \[
 \boxed{
 \left|\mathcal{L}_c(p) - \mathcal{L}_c(q)\right| \leq \mathcal{H}(p, q)
@@ -105,6 +181,7 @@ Hilbert distance can be thought of as the largest difference between the change 
 \]
 
 Controlling Hilbert distance simultaneously bounds the change in CE loss for every possible target token.
+
 
 \section{Geometry of an LM Head Update}
 \label{sec:head-geometry}
@@ -124,10 +201,12 @@ H D(S).
 }
 \label{eq:lm-head-diameter}
 \end{equation}
-Equation~\ref{eq:lm-head-diameter} shows that, for $H>0$, bounding the Hilbert change by $\varepsilon$ uniformly over $\norm{h}_2\leq H$ is equivalent to $D(S)\leq\varepsilon/H$. The result depends on $S$, not on the current head $U$.
+Equation~\ref{eq:lm-head-diameter} shows that, for $H>0$, bounding the Hilbert distance by $\varepsilon$ uniformly over $\norm{h}_2\leq H$ is equivalent to $D(S)\leq\varepsilon/H$. The result depends on $S$, not on the current head $U$.
+
 
 \paragraph{Common row shifts.}
 Replacing $S$ by $S+\one a^\top$ adds the same scalar to every logit and changes neither the softmax distribution nor $D(S)$. Hence $D$ is a seminorm whose kernel consists of common-row matrices. We therefore choose the centered representative $\one^\top S=0$.
+
 
 \paragraph{Backward gradient change.}
 \label{sec:backward-change}
@@ -139,11 +218,19 @@ Let $r=\nabla_z\mathcal L$ be a fixed logit gradient. Since the loss depends on 
 \end{equation}
 For cross entropy with target token $c$, $r=p-e_c$ and $\norm{r}_1/2=1-p_c$, giving $\norm{S^\top(p-e_c)}_2\leq D(S)(1-p_c)\leq D(S)$.  Appendix~\ref{app:lm-head-backward-change} proves this bound and treats the case where $S$ also changes the logits and $r$\footnote{Appendix~\ref{app:muon-backward-change} gives the spectral analogue.}.
 
+
 \section{Steepest Descent for the LM Head}
 \label{sec:steepest-descent}
 
-We now derive a steepest descent update under the row diameter geometry. Let $G=\nabla_U\mathcal L$. For cross entropy, each token position contributes $(\hat y-y)h^\top$ to $G$. Since $\one^\top(\hat y-y)=0$, summing these contributions gives $\one^\top G=0$ and hence $PG=G$, where $P=I_V-\one\one^\top/V$. For a small update $S$, $\mathcal L(U+S)=\mathcal L(U)+\inner{G}{S}_F+o(\norm{S}_F)$, where $\inner{G}{S}_F=\operatorname{tr}(G^\top S)$.
-Moreover, $\one^\top PS=0$, $D(PS)=D(S)$, and $\inner{G}{PS}_F=\inner{G}{S}_F$. Centering therefore selects one representative without changing the functional size or linear objective. The resulting steepest descent problem is
+The diameter constraint does not distinguish $S$ from $S+\one a^\top$. Let $G=\nabla_U\mathcal L$, with rows $g_i^\top$. For softmax cross entropy, each token position contributes $(\hat y-y)h^\top$ to $G$, and hence $\one^\top G=0$. Define the row-centering projector $P=I_V-\one\one^\top/V$. For every update $S$,
+\[
+\one^\top PS=0,
+\qquad
+D(PS)=D(S),
+\qquad
+\inner{G}{PS}_F=\inner{G}{S}_F.
+\]
+Thus, centering chooses one representative without changing either the functional size or the linearized loss. The steepest descent problem may therefore be written as
 \begin{equation}
 \boxed{
 S^\star\in
@@ -153,84 +240,30 @@ S^\star\in
 \label{eq:diameter-steepest-descent}
 \end{equation}
 
-\subsection{Exact dual characterization}
-\label{sec:dual-characterization}
+Prior work on finite vector-valued Kantorovich--Rubinstein and Beckmann duality gives an exact vector-flow characterization of equation~\ref{eq:diameter-steepest-descent} \citep{ciosmak2021optimaltransportvectormeasures, robertson2025generalizationwassersteindistancebeckmann}.
+Appendix~\ref{app:diameter-duality} specializes the result to the LM head. It bounds the first-order decrease of every feasible update and proves that the bound is attained. The corresponding flow program contains one $d$-dimensional variable for every token pair, making it impractical to solve at each training step. We therefore seek an $O(Vd)$ approximation that uses no pairwise variables.
 
-In this section, we characterize the exact optimal value of equation~\ref{eq:diameter-steepest-descent} and the corresponding conditions on active token pairs. Let $g_i^\top$ represent the $i$th row of $G$. For each pair $i<j$, let $y_{ij}\in\R^d$ denote the vector flow from token $i$ to token $j$, and extend it antisymmetrically $y_{ij} = -y_{ji}$. The flow balances $G$ when $\sum_{j\neq i}y_{ij}=g_i$ for every $i$. Such a flow exists because $\sum_i g_i=0$ \footnote{An explicit construction is given in Appendix~\ref{app:diameter-duality}.}. Among such flows, define the minimum total tension\footnote{Writing $S=-\eta\Phi$, $\Phi$ is the vector-valued
-$1$-Lipschitz potential and $Y=\{y_{ij}\}$ the vector flow balancing $G$. We call $Y$ dual to the update problem, whereas Beckmann formulations call the flow primal. ``Tension'' is our mechanical term for the vector flow.} by
-
-\begin{equation}
-\boxed{
-\mathcal T(G)
-\coloneqq
-\min_{\{y_{ij}\in\R^d\}_{i<j}}
-\left\{
-\sum_{i<j}\norm{y_{ij}}_2:
-\sum_{j\neq i}y_{ij}=g_i
-\ \text{for every }i
-\right\}.
-}
-\label{eq:minimum-tension}
-\end{equation}
-For any balanced flow and any update $S$,
-\begin{equation}
-\inner{G}{S}_F
-=\sum_i\inner{g_i}{s_i}
-=\sum_i\inner{\sum_{j\neq i}y_{ij}}{s_i}
-=\sum_{i<j}\!\left(\inner{y_{ij}}{s_i}+\inner{y_{ji}}{s_j}\right)
-=\sum_{i<j}\inner{y_{ij}}{s_i-s_j}.
-\label{eq:flow-pairing}
-\end{equation}
-As $D(S)\leq\eta$, choosing the balanced flow with minimum total tension and applying Cauchy--Schwarz gives
-\[
-\inner{G}{S}_F=\sum_{i<j}\inner{y_{ij}}{s_i-s_j}
-\geq-\sum_{i<j}\norm{y_{ij}}_2\norm{s_i-s_j}_2
-\geq-\eta\sum_{i<j}\norm{y_{ij}}_2=-\eta\mathcal T(G).
-\]
-This is the finite complete-graph instance of vector-valued Kantorovich--Rubinstein or Beckmann duality, under which the lower bound is attained \citep{ciosmak2021optimaltransportvectormeasures,robertson2025generalizationwassersteindistancebeckmann}. Consequently,
-\begin{equation}
-\boxed{
-\min_{\substack{D(S)\leq\eta\\\one^\top S=0}}
-\inner{G}{S}_F
-=
--\eta\mathcal T(G).
-}
-\label{eq:diameter-flow-duality}
-\end{equation}
-A proof is given in Appendix~\ref{app:diameter-duality}. The dual also has a mechanical interpretation \citep{ciosmak2021matrixholdersinequalitydivergence}. Regard $-g_i$ as an external force applied at token $i$. The vectors $y_{ij}$ are internal tensions that balance these forces. For an optimal flow and update,
-\begin{equation}
-y_{ij}^\star\neq0
-\quad\Longrightarrow\quad
-s_i^\star-s_j^\star
-=
--\eta\frac{y_{ij}^\star}{\norm{y_{ij}^\star}_2}.
-\label{eq:cable-complementarity}
-\end{equation}
-Thus every pair carrying nonzero optimal tension is separated by the full diameter $\eta$. The optimal update stretches only the token pairs needed to balance the gradient. The characterization is exact, but solving this complete-graph formulation directly is impractical at vocabulary scale. It introduces one $d$-dimensional variable for each of the $\binom{V}{2}$ possible token pairs. An optimal solution need not use every pair, but the direct formulation must allow for all of them. We therefore use $\eta\mathcal T(G)$ as the exact reference decrease and next derive an $O(Vd)$ approximation that requires no pairwise variables.
 
 \subsection{Projected RowNorm as an approximation}
 \label{sec:projected-rownorm}
 
-In this section, we show that projected RowNorm solves exactly a stronger problem with a radius constraint and retains at least $1/\sqrt{2}$ of the optimal instantaneous linear decrease, using $O(Vd)$ computation. For $A\in\R^{V\times d}$, let $\mathsf{RN}(A)$ normalize every nonzero row to unit Euclidean norm and map zero rows to zero. Since $\one^\top G=0$ and $PG=G$, define
+In this section, we show that projected RowNorm provides such an approximation.
+Projected RowNorm replaces the diameter constraint with a stronger radius constraint.
+Define $\operatorname{rad}(S)=\min_{\zeta\in\R^d}\max_i\norm{s_i-\zeta}_2$.
+The triangle inequality gives $D(S)\leq2\operatorname{rad}(S)$.
+Therefore, $\operatorname{rad}(S)\leq\eta/2$ implies $D(S)\leq\eta$. For $A\in\R^{V\times d}$ with rows $a_i^\top$, let $\mathsf{RN}(A)$ have row $a_i^\top/\norm{a_i}_2$ when $a_i\neq0$, and row $0^\top$ otherwise.
+Define
 \begin{equation}
 \boxed{
-\mathsf{PRN}(A)=P\,\mathsf{RN}(PA),
+\begin{aligned}
+\mathsf{PRN}(A)
+&=P\,\mathsf{RN}(PA),
 \qquad
 S_{\mathrm{RN}}(G;\eta)
-=-\frac{\eta}{2}\mathsf{PRN}(G).
-}
-\label{eq:projected-rownorm}
-\end{equation}
-The inner projection centers the gradient before normalization, while the outer projection centers the resulting update. This is also the projected RowNorm map derived from softmax permutation symmetry by \citet{lau2026symmetry}. Up to their width-normalization convention, Table~2 of \citet{pethick2025trainingdeeplearningmodels} identifies row normalization as the linear minimization oracle of a maximum row-Euclidean norm.
-
-\paragraph{A simpler radius constraint.}
-\label{sec:rownorm-covering-radius}
-
-We first identify the simpler problem solved by projected RowNorm. Define the covering radius by $\operatorname{rad}(S)=\min_{\zeta\in\R^d}\max_i\norm{s_i-\zeta}_2$. Since $D(S)\leq2\operatorname{rad}(S)$, the condition $\operatorname{rad}(S)\leq\eta/2$ is sufficient for $D(S)\leq\eta$. The corresponding centered linear oracle is
-\begin{equation}
-\boxed{
+=-\frac{\eta}{2}\mathsf{PRN}(G),
+\\
 S_{\mathrm{RN}}(G;\eta)
-\in
+&\in
 \arg\min_{\substack{\operatorname{rad}(S)\leq\eta/2\\
                     \one^\top S=0}}
 \inner{G}{S}_F,
@@ -240,13 +273,21 @@ S_{\mathrm{RN}}(G;\eta)
 -\inner{G}{S_{\mathrm{RN}}(G;\eta)}_F
 =
 \frac{\eta}{2}\sum_i\norm{g_i}_2.
+\end{aligned}
 }
-\label{eq:rownorm-radius-oracle}
+\label{eq:projected-rownorm}
 \end{equation}
-Indeed, $\sum_i g_i=0$ makes the center of the ball invisible to the objective. For a fixed center, the problem separates across rows, and each nonzero row is optimized in the direction opposite to $g_i$. Centering the result gives $S_{\mathrm{RN}}(G;\eta)$. The complete proof is given in Appendix~\ref{app:rownorm-proof}.
+Indeed, the center of the enclosing ball does not affect the objective because $\sum_i g_i=0$.
+Before imposing zero row mean, fixing the center makes the minimization separate across rows. Each nonzero displacement $s_i-\zeta$ then points opposite to $g_i$.
+Translating this solution to zero row mean preserves its radius and objective, giving equation~\ref{eq:projected-rownorm}. Appendix~\ref{app:rownorm-proof} gives the complete proof.
+\citet{lau2026symmetry} derive the same projected RowNorm map from softmax symmetries.
+Independently, Table~2 of \citet{pethick2025trainingdeeplearningmodels} identifies row normalization, up to their width-scaling convention, as the linear minimization oracle for the maximum row-Euclidean norm.
+Here, it arises as an exact solution of the radius-restricted problem induced by the Hilbert row diameter geometry.
+
 
 \paragraph{How much does RowNorm lose?}
 \label{sec:rownorm-comparison}
+
 
 Let $\Delta_\star=-\inner{G}{S^\star}_F$. If $G\neq0$, $\eta>0$, and
 $k=\rank(G)$, then
@@ -259,7 +300,8 @@ $k=\rank(G)$, then
 }
 \label{eq:rownorm-guarantee}
 \end{equation}
-Feasibility gives the upper bound. For the lower bound, project the update rows onto the $k$-dimensional span of the gradient rows and apply Jung's theorem \citep{Jung1901,article}. Comparing its radius $J_k\eta$, where $J_k=\sqrt{k/[2(k+1)]}$, with the $\eta/2$ radius used by projected RowNorm gives the stated factor. The complete proof and sharpness construction are given in Appendix~\ref{app:rownorm-proof}.
+Since projected RowNorm satisfies the original diameter constraint, $\Delta_{\mathrm{RN}}\leq\Delta_\star$. For the lower bound, project the update rows onto the $k$-dimensional span of the gradient rows. This preserves the objective and cannot increase the diameter. Jung's theorem \citep{Jung1901,article} places the projected rows inside a ball of radius $\eta\sqrt{k/[2(k+1)]}$. Rescaling this ball to radius $\eta/2$ gives the stated factor. Appendix~\ref{app:rownorm-proof} provides the complete proof and a sharp equality construction.
+
 
 \paragraph{Practical projected RowNorm.}
 \label{sec:rownorm-algorithm}
@@ -270,24 +312,36 @@ At iteration $t$, let $G_t=\nabla_U\mathcal L_t(U_t)$, update $B_t=\mu B_{t-1}+(
 S_t^{\mathrm{RN}}
 =-\gamma_tP\,\mathsf{RN}_{\epsilon_{\mathrm{num}}}(C_t),
 \qquad
-U_{t+1}=U_t+S_t^{\mathrm{RN}}.
+U_{t+1}=(1-\gamma_t\lambda)U_t+S_t^{\mathrm{RN}}.
 }
 \label{eq:rownorm-final-algorithm}
 \end{equation}
 For the update in equation~\ref{eq:rownorm-final-algorithm}, every normalized row has norm at most one, and centering preserves pairwise differences. Therefore $D(S_t^{\mathrm{RN}})\leq2\gamma_t$, corresponding to $\eta_t=2\gamma_t$. The update costs $O(Vd)$, uses one first-moment buffer, and stores no token pairs.
-Across three seeds at each of 190M, 380M, and 640M models with a Nesterov Muon backbone, the AdamW and RowNorm LM head recipes differ by at most $0.0153$ in mean final validation loss. RowNorm gives $45$--$60\times$ smaller mean final step diameters and $12$--$15\times$ smaller mean empirical per step Hilbert RMS perturbations. The experiment setup and training curves are provided in Appendix~\ref{app:experiments}.
+Across 190M, 380M, and 640M models, the AdamW and RowNorm LM head recipes differ by at most $0.0153$ in final validation loss. RowNorm gives $45$--$60\times$ smaller final step diameters and $12$--$15\times$ smaller empirical per step Hilbert RMS perturbations. The experiment setup and training curves are provided in Appendix~\ref{app:experiments}.
+
 
 \section{Conclusion}
-The LM head maps hidden states to logits, which softmax converts into a probability distribution. We therefore measure an update through the change it induces in this distribution, while respecting the invariance of softmax to common logit shifts. Hilbert's projective distance respects this structure by measuring the largest change in pairwise log odds. Under this probability geometry, the functional size of an update $S$ over $\norm{h}_2\leq H$ is exactly $H D(S)$, where $D(S)=\max_{i<j}\norm{s_i-s_j}_2$. The same diameter controls the backward map at a fixed zero sum logit gradient through $\norm{S^\top r}_2\leq D(S)\norm{r}_1/2$. These results make $D(S)\leq\eta$ the natural constraint for first order steepest descent. Its optimal decrease is $\eta\mathcal T(G)$, where $\mathcal T(G)$ is the minimum total tension of a vector flow balancing the centered gradient rows, as given by vector-valued Kantorovich--Rubinstein duality. Although this oracle couples pairs of tokens, the stronger constraint $\operatorname{rad}(S)\leq\eta/2$ separates across rows. Projected RowNorm solves this restricted oracle in $O(Vd)$, satisfies the original diameter constraint, and retains at least $\sqrt{(k+1)/(2k)}\geq1/\sqrt{2}$ of the optimal linear decrease, where $k=\rank(G)$.
-Experiments from 190M to 640M parameters show that this geometric control is realized in training. Future work should test projected RowNorm at larger scale and investigate whether analogous functional geometries arise for other modules.
+
+
+Looking at the LM head from first principles and considering its composition with softmax leads us to Hilbert's projective distance.
+We identify row diameter as the trust region induced by this metric for the LM head.
+The finite vector-valued Kantorovich--Rubinstein duality gives an exact vector-flow characterization of the resulting steepest descent problem \citep{ciosmak2021optimaltransportvectormeasures, robertson2025generalizationwassersteindistancebeckmann}.
+Its direct formulation, however, is computationally expensive at vocabulary scale.
+We therefore turn to projected RowNorm as a tractable approximation. The update itself is not new \citep{lau2026symmetry, pethick2025trainingdeeplearningmodels}.
+Our contribution is to derive projected RowNorm from the probability geometry of the LM head and prove its sharp approximation guarantee relative to the exact diameter-constrained steepest descent problem.
+Experiments from 190M to 640M parameters show substantially smaller step diameters and Hilbert perturbations, while validation loss remains slightly higher than AdamW.
+More broadly, these results suggest that optimizer geometry should reflect the function and invariances of the complete module, rather than those of its parameter matrix alone.
+
 
 \bibliography{sample}
 \newpage
 \clearpage
 \appendix
 
+
 \section{Related work}
 \label{app:related-work}
+
 
 \paragraph{Norms, modules, and Muon.}
 A steepest descent direction is defined only after choosing how the size of an
@@ -310,6 +364,7 @@ take the composed LM head and softmax as our starting point and derive its
 update geometry from the change induced in the output probability
 distribution.
 
+
 \paragraph{The LM head and softmax.}
 The LM head is a vocabulary-indexed linear map whose logits are converted by
 softmax into the next token distribution. Prior work has studied the
@@ -328,6 +383,7 @@ the token rows and invariance to a shared logit shift. We obtain the same
 update from a complementary functional argument by measuring the change it
 induces in the output probability distribution.
 
+
 \paragraph{Geometry on probability distributions.}
 The probability simplex admits several geometries, each encoding a different
 notion of change. The Fisher metric
@@ -340,15 +396,17 @@ also expressed through log ratios, but measures their range rather than their
 Euclidean magnitude. It originates in the geometry of positive cones and
 Birkhoff contraction theory \citep{birkhoff1957extensions,de1993hilbert}, and
 on the probability simplex it becomes the variation-norm distance between
-normalized log coordinates \citep{nielsen2023non}. This geometry also admits
+normalized log coordinates \citep{gaubert2015dobrushin, Nielsen_2018, nielsen2023non}. This geometry also admits
 quantitative comparisons with total variation
 \citep{cohen2023hyperbolic}. We apply Hilbert distance to the output of the
 composed LM head and softmax and show that the resulting worst case
 distributional change is governed exactly by the Euclidean diameter of the
 LM head update rows.
 
+
 \paragraph{Row and column normalization.}
 Row and column normalization have emerged from several different views of optimizer geometry. From the operator norm perspective, \citet{pethick2025trainingdeeplearningmodels} derive ColNorm and RowNorm as the exact linear minimization oracles of the $\ell_1$-to-RMS and RMS-to-$\ell_\infty$ norm balls, building on general maximum-column and maximum-row operator norm identities \citep{bernstein2024old,bernstein2024modular}. \citet{xu2026widthscalingneuraloptimizers} extends this construction to mean-normalized $p\rightarrow q$ operator norms, producing generalized row and column normalization with scaling chosen for stable behavior across model widths. For the LM head, \citet{glentis2026memoryefficientllmpretrainingminimalist} apply column normalization under a $d\times V$ convention; since columns index tokens, this is unprojected RowNorm after transposing to our $V\times d$ convention. Closest to our work, \citet{lau2026symmetry} derive the projected map $P\,\mathsf{RN}(P\,\cdot)$ from token permutation and logit-shift symmetries. Row normalization has also been motivated as an efficient approximation to Muon-style preconditioning \citep{deng2026rmnprowmomentumnormalizedpreconditioning}, while gradient multi-normalization alternates row and column normalization to satisfy several norm constraints simultaneously \citep{scetbon2025gradientmultinormalizationstatelessscalable}. Although these methods produce related algebraic operations, they arise from different constraints. We instead begin with the composed LM head and softmax: Hilbert distance induces the translation invariant row diameter geometry, and projected RowNorm solves its covering-radius restriction with the approximation guarantee in equation~\ref{eq:rownorm-guarantee}.
+
 
 \paragraph{Vector flows and optimal transport.}
 Optimal transport admits complementary potential and flow formulations. In
@@ -366,6 +424,7 @@ the complete graph with unit edge weights and identity connection. We use
 this flow--potential duality to characterize steepest descent under the
 LM head row diameter geometry.
 
+
 \section{Pretraining experiments}
 \label{app:experiments}
 
@@ -374,6 +433,7 @@ the row diameter and induced Hilbert perturbation of the derived LM
 head increment. Within each model size and seed, the paired runs
 share the backbone and input embedding optimizers, initialization seed, data
 order, batch configuration, and training schedule. The experimental differences are isolated at the LM head.
+
 
 \paragraph{Models and data.}
 We train decoder-only Transformers \citep{vaswani2023attentionneed} with 32
@@ -389,7 +449,7 @@ drawn from $\mathcal N(0,0.02^2)$. Table~\ref{tab:experiment-models} gives the
 model dimensions and training scales. Parameter counts include both the input
 embedding and the untied LM head.
 We use 890 training shards and one validation shard from the FineWeb100B
-release, tokenized with the GPT-2 tokenizer \citep{penedo2024finewebdatasetsdecantingweb}. They contain 89.0 billion
+release, tokenized with the GPT-2 tokenizer \citep{radford2019language, penedo2024finewebdatasetsdecantingweb}. They contain 89.0 billion
 training tokens and 100 million validation tokens. The vocabulary contains
 $50{,}257$ tokens and the context length is $2{,}048$. At
 each loader epoch, the shard order and the order of complete optimizer batches
@@ -410,12 +470,13 @@ Model & $d$ & Heads & Parameters & Micro/GPU & Accum. & Updates & Training token
 640M & 1024 & 16 & $639{,}797{,}248$ & 8  & 4 & $24{,}406$ & $12{,}795{,}772{,}928$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{Model and training scales.} Microbatch is measured in sequences per GPU. All runs use eight GPUs, a global batch of 256 sequences, and a nominal budget of 20 training tokens per parameter.}
+\caption{\textbf{Model and training scales.} Microbatch is measured in sequences per GPU. All runs use eight GPUs, a global batch of 256 sequences, and 20 training tokens per parameter.}
 \label{tab:experiment-models}
 \end{table*}
 
 \paragraph{Training protocol.}
-For every model size and LM head recipe, we run seeds 0, 1, and 2, giving 18 runs in total, each with a nominal budget of 20 training tokens per parameter. The global batch contains 256 sequences of length $2{,}048$, or $524{,}288$ tokens per update. For the 190M, 380M, and 640M models, the per-GPU microbatch sizes are 32, 16, and 8, with 1, 2, and 4 gradient accumulation steps, respectively. We clip the global gradient norm at 1.0. Let $T$ denote the total number of updates. Every learning rate follows the same schedule: linear warmup for $\lfloor 0.1T\rfloor$ updates, followed by cosine decay from its peak to $10\%$ of the peak at the final update. Validation is performed every 500 updates and at the final update. Training uses one node with eight NVIDIA H200 GPUs and distributed data parallelism. Parameters and optimizer states use FP32. Forward passes use BF16 autocast; RMSNorm computations use FP32 internally, and logits are cast to FP32 before cross entropy and diagnostic calculations. The runs use PyTorch~\texttt{2.13.0+cu126} with CUDA~12.6.
+For every model size and LM head recipe, we run seeds 0, 1, and 2, giving 18 runs in total, each model trained for 20 tokens per parameter. The global batch contains 256 sequences of length $2{,}048$, or $524{,}288$ tokens per update. For the 190M, 380M, and 640M models, the per-GPU microbatch sizes are 32, 16, and 8, with 1, 2, and 4 gradient accumulation steps, respectively. We clip the global gradient norm at 1.0. Let $T$ denote the total number of updates. Every learning rate follows the same schedule: linear warmup for $\lfloor 0.1T\rfloor$ updates, followed by cosine decay from its peak to $10\%$ of the peak at the final update. Validation is performed every 500 updates and at the final update. Training uses one node with eight NVIDIA H200 GPUs and distributed data parallelism. Parameters and optimizer states use FP32. Forward passes use BF16 autocast; RMSNorm computations use FP32 internally, and logits are cast to FP32 before cross entropy and diagnostic calculations. The runs use PyTorch~\texttt{2.13.0+cu126} with CUDA~12.6.
+
 
 \paragraph{Optimizer recipes.}
 We apply Nesterov Muon to every linear weight matrix in the Transformer
@@ -432,6 +493,7 @@ is applied to the bias-corrected moment $B_t/(1-0.95^{t+1})$. RowNorm uses
 $\epsilon=10^{-8}$ and no LM head weight decay. Table~\ref{tab:experiment-head-optimizers} gives the peak learning rates.
 The comparison changes the complete LM head recipe, including its
 learning rate, moment estimate, numerical stabilizer, and weight decay.
+
 
 \begin{table}[t]
 \centering
@@ -450,6 +512,7 @@ $\beta=0.95$ at every model scale.}
 \label{tab:experiment-head-optimizers}
 \end{table}
 
+
 The implementation normalizes the EMA rows directly rather than explicitly
 materializing both projections in $P\,\mathsf{RN}(P\,\cdot)$. In exact
 arithmetic, the inner projection is redundant because $B_{-1}=0$ and
@@ -460,36 +523,38 @@ Hilbert perturbation, nor the gradient passed to the backbone. The implemented
 update therefore represents the same quotient-space direction as projected
 RowNorm, up to floating-point roundoff.
 
+
 \paragraph{Diagnostics.}
 We compute all geometric diagnostics from the optimizer increment, excluding
-decoupled weight decay. Let $U_t$ be the LM head before optimizer step $t$, and let
+decoupled weight decay. Let $U_t$ be the LM head before update $t$, and let
 $S_t$ be the signed optimizer increment formed from the globally clipped
 gradient and optimizer state, including the current learning rate. The complete
 update is
 \[
 U_{t+1}=(1-\gamma_t\lambda)U_t+S_t,
 \]
-where $\lambda=0.1$ for AdamW and $\lambda=0$ for RowNorm. We record the row
-diameter
+where $\lambda=0.1$ for AdamW and $\lambda=0$ for RowNorm. We record the row diameter
 \[
 D(S_t)=\max_{i<j}\norm{(S_t)_{i:}-(S_t)_{j:}}_2
 \]
-every 10 updates and at the final update. For the Hilbert diagnostic, we fix a panel of $N=8{,}192$ validation token positions. At each diagnostic evaluation, we recompute their hidden states under the current model and denote them by $h_{t,\ell}$. The perturbation at position
+every 10 updates and at the final update. For the Hilbert diagnostic, we fix a panel of $N=8{,}192$ validation token positions. After update $t$, we recompute the hidden states of this panel under the updated model and denote them by $h_{t,\ell}^{\mathrm{post}}$. The perturbation at position
 $\ell$ is
 \[
-\delta^{\mathrm H}_{t,\ell}
+\delta_{t,\ell}
 =
-\max_i(S_t h_{t,\ell})_i-\min_i(S_t h_{t,\ell})_i.
+\max_i(S_t h_{t,\ell}^\mathrm{post})_i-\min_i(S_t h_{t,\ell}^\mathrm{post})_i.
 \]
 We report the root mean square
 \[
-\left(\frac{1}{N}\sum_{\ell=1}^N (\delta^{\mathrm H}_{t,\ell})^2\right)^{1/2}
+\left(\frac{1}{N}\sum_{\ell=1}^N \delta_{t,\ell}^2\right)^{1/2}
 \]
 every 500 updates and at the final update. This statistic measures a single
 optimizer increment on the fixed validation panel. It is not the supremum over
 all bounded hidden states or the cumulative drift from initialization.
 
+
 \paragraph{Results.}
+Table~\ref{tab:experiment-results} summarizes the final validation losses and geometric diagnostics.
 Across the three paired seeds, the final validation loss differences
 (RowNorm minus AdamW) are $0.0153\pm0.0027$, $0.0091\pm0.0007$, and
 $0.0057\pm0.0012$ at 190M, 380M, and 640M parameters, respectively, where
@@ -499,7 +564,8 @@ AdamW mean to the RowNorm mean are $45.1$, $54.3$, and $59.5$ for row
 diameter (Figure~\ref{fig:experiment-diameter}) and $12.1$, $13.6$, and
 $15.2$ for Hilbert RMS (Figure~\ref{fig:experiment-hilbert}). For every
 model size and seed, RowNorm has smaller row diameter and Hilbert RMS at every
-recorded measurement.
+recorded checkpoint.
+
 
 \begin{figure*}[t]
 \centering
@@ -534,7 +600,6 @@ $\pm$ one sample standard deviation. For every seed and model size, RowNorm is b
 \label{fig:experiment-hilbert}
 \end{figure*}
 
-\FloatBarrier
 
 \begin{table*}[t]
 \centering
@@ -577,6 +642,9 @@ means $\pm$ sample standard deviations over seeds 0, 1, and 2. Geometry is
 computed from $S_t$ at the final update and excludes decoupled weight decay.}
 \label{tab:experiment-results}
 \end{table*}
+
+\FloatBarrier
+
 
 \section{Spectral control of the forward and backward maps}
 \label{app:muon-backward-change}
@@ -622,6 +690,7 @@ $\norm{S^\top}_{\mathrm{op}}=\norm{S}_{\mathrm{op}}$ therefore makes the
 same spectral bound control the worst case change in both the forward map
 and its transpose.
 
+
 \section{Backward change through the LM head and softmax}
 \label{app:lm-head-backward-change}
 
@@ -636,21 +705,21 @@ We first prove the bound used in the main text. Let
 $A\in\R^{V\times d}$ have rows $a_i^\top$, and let
 $r\in\R^V$ satisfy $\one^\top r=0$. The claim is immediate when $r=0$, so
 suppose $r\neq0$. Set $m=\norm{r}_1/2$ and write
-$r=m(\alpha-\beta)$, where
-$\alpha_i=(r_i)_+/m$ and $\beta_i=(-r_i)_+/m$. The zero-sum condition
-implies that $\alpha$ and $\beta$ are probability vectors. Therefore,
+$r=m(\pi^+-\pi^-)$, where
+$\pi^+_i=(r_i)_+/m$ and $\pi^-_i=(-r_i)_+/m$. The zero-sum condition
+implies that $\pi^+$ and $\pi^-$ are probability vectors. Therefore,
 \[
 A^\top r
 =
-m\left(\sum_i\alpha_i a_i-\sum_j\beta_j a_j\right)
+m\left(\sum_i\pi^+_i a_i-\sum_j\pi^-_j a_j\right)
 =
-m\sum_{i,j}\alpha_i\beta_j(a_i-a_j),
+m\sum_{i,j}\pi^+_i\pi^-_j(a_i-a_j),
 \]
 and the triangle inequality gives
 \begin{equation}
 \norm{A^\top r}_2
 \leq
-m\sum_{i,j}\alpha_i\beta_j\norm{a_i-a_j}_2
+m\sum_{i,j}\pi^+_i\pi^-_j\norm{a_i-a_j}_2
 \leq
 mD(A)
 =
@@ -697,8 +766,8 @@ The first term in either line changes the transpose map while holding a logit gr
 Applying equation~\ref{eq:zero-sum-diameter-bound} to equation~\ref{eq:full-backward-decomposition} therefore reduces the problem to bounding $\operatorname{TV}(p,q)$.
 
 \paragraph{Total variation and Hilbert distance.}
-For strictly positive probability vectors, the sharp comparison
-\citep[Theorem~5.1]{cohen2023hyperbolic} is
+For strictly positive probability vectors, the sharp comparison \citep[Proposition~7]{Reeb_2011}
+(see also \citep[Theorem~5.1]{cohen2023hyperbolic}) is
 \begin{equation}
 \operatorname{TV}(p,q)
 \leq
@@ -725,7 +794,8 @@ $\sum_i p_i\rho_i=1$ yields
 \frac{(b-1)(1-a)}{b-a}.
 \label{eq:tv-chord-bound}
 \end{equation}
-Now write $R=b/a=e^\delta$ and $t=\sqrt R$, where
+The right-hand side of equation~\ref{eq:tv-chord-bound} can be bounded by
+writing $R=b/a=e^\delta$ and $t=\sqrt R$, where
 $\delta=\mathcal H(q,p)$. Then
 \[
 \frac{(b-1)(1-a)}{b-a}
@@ -790,7 +860,9 @@ In particular, if $\norm{h}_2\leq H$ and $D(S)\leq\eta$, then
 \eta\left(1+\frac{H D_{\min}}{4}\right).
 \]
 
-The dependence on the current head is unavoidable. For example, fix
+
+The dependence on the current head in
+equation~\ref{eq:full-backward-diameter-bound} is unavoidable. For example, fix
 $\eta>0$ and take $V=d=2$, $h=e_1$, and rows
 $u_1=Me_2$, $u_2=-Me_2$, $s_1=(\eta/2)e_1$, and
 $s_2=-(\eta/2)e_1$. Then $D(S)=\eta$,
@@ -799,18 +871,60 @@ $S^\top(q-e_c)$ is parallel to $e_1$. Hence
 $\norm{b^+-b}_2\geq M\tanh(\eta/2)\to\infty$ as $M\to\infty$.
 Thus no bound on the complete backward change can depend on $D(S)$ alone.
 
-\section{Proof of the exact dual characterization}
+
+\section{Exact dual characterization of the diameter problem}
 \label{app:diameter-duality}
 
-In this section, we prove the exact dual characterization in
-equation~\ref{eq:diameter-flow-duality}. We first construct a balanced flow,
-then derive its potential dual, and finally prove the active-edge condition
-in equation~\ref{eq:cable-complementarity}.
+The diameter-constrained update problem has an equivalent representation on the complete graph whose vertices are tokens. The rows of the gradient specify an imbalance at each token, while vector-valued flows between token pairs balance these rows. A pairing identity first gives a lower bound on the update objective. The dual potential problem then shows that this bound is attained. Throughout, let $G\in\R^{V\times d}$ have rows $g_i^\top$, assume $\sum_i g_i=0$, and fix $\eta\geq0$. For $S\in\R^{V\times d}$, write
+$s_i^\top$ for its $i$th row and recall that
+\[
+D(S)=\max_{i<j}\norm{s_i-s_j}_2.
+\]
+
+
+\paragraph{Balanced vector flows.}
+For each pair $i<j$, let $y_{ij}\in\R^d$ denote the vector flow from token $i$ to token $j$, and extend it antisymmetrically $y_{ij} = -y_{ji}$. We say that a flow $Y=\{y_{ij}\}_{i<j}$ balances $G$ if
+\[
+\sum_{j\neq i}y_{ij}=g_i
+\qquad\text{for every token }i.
+\]
+Thus, the net vector leaving token $i$ must equal the corresponding gradient
+row. Among all balanced flows, define
+\begin{equation}
+\boxed{
+\mathcal T(G)
+\coloneqq
+\min_{\substack{\{y_{ij}\in\R^d\}_{i<j}\\
+                 \sum_{j\neq i}y_{ij}=g_i\ \text{for every }i}}
+\sum_{i<j}\norm{y_{ij}}_2 .
+}
+\label{eq:minimum-tension}
+\end{equation}
+The objective is the total magnitude of the flow. We call its minimum $\mathcal T(G)$ the minimum total tension. The mechanical origin of this terminology is explained at the end of the section.
+
+
+\paragraph{Exact characterization.}
+The centered diameter oracle satisfies
+\begin{equation}
+\boxed{
+\min_{\substack{D(S)\leq\eta\\\one^\top S=0}}
+\inner{G}{S}_F
+=
+-\eta\mathcal T(G).
+}
+\label{eq:diameter-flow-duality}
+\end{equation}
+Equivalently, the largest attainable first-order decrease under the diameter
+bound is $\eta\mathcal T(G)$. We now prove this identity.
+
 
 \paragraph{Existence of a balanced flow.}
-Recall that $G$ has rows $g_i^\top$ and satisfies $\sum_i g_i=0$. A flow
-contains one vector $y_{ij}\in\R^d$ for each $i<j$ and is extended
-antisymmetrically by $y_{ji}=-y_{ij}$. For each $i<j$, define
+The condition $\sum_i g_i=0$ is necessary for balance, since antisymmetry
+implies
+\[
+\sum_i\sum_{j\neq i}y_{ij}=0.
+\]
+On the complete graph, it is also sufficient. For each $i<j$, define
 \[
 y_{ij}^{(0)}=\frac{g_i-g_j}{V},
 \qquad
@@ -826,12 +940,53 @@ For every token $i$,
 =
 g_i,
 \]
-where the final equality uses $\sum_jg_j=0$. Thus the feasible set in equation~\ref{eq:minimum-tension} is nonempty. The feasible set is closed, and every sublevel set of $\sum_{i<j}\norm{y_{ij}}_2$ is bounded. These sublevel sets are therefore
-compact, so the minimum defining $\mathcal T(G)$ is attained.
+Thus the feasible set in equation~\ref{eq:minimum-tension} is nonempty. The feasible set is a closed affine set. Moreover, every sublevel set of $\sum_{i<j}\norm{y_{ij}}_2$ is bounded, since the norm of each edge variable is bounded by the total sum. Its feasible sublevel sets are therefore compact, so the minimum defining $\mathcal T(G)$ is attained.
+
+
+\paragraph{Pairing flows with updates.}
+Balanced flows enter the update problem through the following identity. For
+any balanced flow $Y$ and any update $S$,
+\begin{equation}
+\begin{aligned}
+\inner{G}{S}_F
+&=
+\sum_i\inner{g_i}{s_i}
+=
+\sum_i
+\inner{\sum_{j\neq i}y_{ij}}{s_i} \\
+&=
+\sum_{i<j}
+\left(
+\inner{y_{ij}}{s_i}
++
+\inner{y_{ji}}{s_j}
+\right)
+=
+\sum_{i<j}\inner{y_{ij}}{s_i-s_j}.
+\end{aligned}
+\label{eq:flow-pairing}
+\end{equation}
+The linear objective can therefore be written entirely in terms of pairwise
+row differences. If $D(S)\leq\eta$, Cauchy--Schwarz gives
+\[
+\inner{G}{S}_F
+\geq
+-\sum_{i<j}
+\norm{y_{ij}}_2\norm{s_i-s_j}_2
+\geq
+-\eta\sum_{i<j}\norm{y_{ij}}_2.
+\]
+Choosing a balanced flow that attains $\mathcal T(G)$ yields
+\[
+\inner{G}{S}_F\geq-\eta\mathcal T(G).
+\]
+Thus no feasible update can have objective value below
+$-\eta\mathcal T(G)$. It remains to show that this lower bound is attained.
+
 
 \paragraph{The potential dual.}
-Introduce a vector $\phi_i\in\R^d$ for each balance constraint, and let
-$\Phi$ denote the matrix with rows $\phi_i^\top$. The Lagrangian is
+To determine whether the preceding lower bound is sharp, we derive the Lagrange dual of the minimum-flow problem. Associate a vector Lagrange multiplier $\phi_i\in\R^d$ with each balance equation, and let $\Phi\in\R^{V\times d}$ have rows $\phi_i^\top$.
+
 \[
 \begin{aligned}
 \mathfrak L(Y,\Phi)
@@ -841,7 +996,7 @@ $\Phi$ denote the matrix with rows $\phi_i^\top$. The Lagrangian is
 \sum_i
 \inner{\phi_i}{
 g_i-\sum_{j\neq i}y_{ij}
-}\\
+} \\
 &=
 \inner{G}{\Phi}_F
 +
@@ -866,19 +1021,31 @@ where the second equality uses $y_{ji}=-y_{ij}$. For any $a\in\R^d$,
 \end{cases}
 \]
 The first case follows from Cauchy--Schwarz. In the second case, taking
-$y=t\,a/\norm{a}_2$ and letting $t\to\infty$ sends the expression to
-$-\infty$. The dual problem is therefore
+$y=t\,a/\norm{a}_2$ and sending $t\to\infty$ makes the expression tend to
+$-\infty$. Applying this identity independently to every edge, the infimum of the
+Lagrangian over $Y$ is finite exactly when
+$\norm{\phi_i-\phi_j}_2\leq1$ for every pair. In that case, the infimum equals
+$\inner{G}{\Phi}_F$. The Lagrange dual is therefore
 \[
-\max_{\Phi}\inner{G}{\Phi}_F
-\qquad
-\text{subject to}
-\qquad
+\sup_{\Phi}\inner{G}{\Phi}_F
+\qquad\text{subject to}\qquad
 \norm{\phi_i-\phi_j}_2\leq1
 \quad\text{for every }i<j.
 \]
-Its constraint is exactly $D(\Phi)\leq1$.
+The constraint is precisely $D(\Phi)\leq1$.
 
-\paragraph{Strong duality.}
+Equip the token set with the discrete metric, which assigns distance one to
+every pair of distinct tokens. The constraint $D(\Phi)\leq1$ then says that
+the map $i\mapsto\phi_i$ is vector valued and $1$-Lipschitz. The minimum-flow problem is a finite vector-valued Beckmann problem, while
+the potential maximization is its vector-valued Kantorovich--Rubinstein dual
+\citep{ciosmak2021optimaltransportvectormeasures,
+robertson2025generalizationwassersteindistancebeckmann}.
+Related formulations using Lipschitz-free spaces and tensor products appear
+in \citet{arens1956embedding,CHAVEZDOMINGUEZ2011387,
+cabrerapadilla2015lipschitztensorproduct}. Here, ``primal'' and ``dual'' refer to the flow problem and its Lagrange dual, respectively. Relative to the original diameter-constrained update problem, the minimum-flow problem provides its dual characterization.
+
+
+\paragraph{Why the lower bound is exact.}
 Write the flow problem as the second-order cone program
 \[
 \min_{Y,\{t_{ij}\}}
@@ -908,14 +1075,20 @@ D(\widetilde\Phi)=D(\Phi),
 =
 \inner{G}{\Phi}_F.
 \]
-We may therefore impose $\one^\top\Phi=0$ without changing the dual value. The centered dual feasible set is compact. Indeed, if
-$\sum_j\phi_j=0$ and $D(\Phi)\leq1$, then
+We may therefore impose $\one^\top\Phi=0$ without changing the dual value.
+The centered feasible set is closed and bounded, hence compact. To see
+boundedness, if $\sum_j\phi_j=0$ and $D(\Phi)\leq1$, then
 \[
+\begin{aligned}
 \norm{\phi_i}_2
-=
-\norm{\frac{1}{V}\sum_j(\phi_i-\phi_j)}_2
-\leq1
-\qquad\text{for every }i.
+&=
+\norm{\frac{1}{V}\sum_j(\phi_i-\phi_j)}_2 \\
+&\leq
+\frac{1}{V}\sum_j\norm{\phi_i-\phi_j}_2
+\leq
+\frac{V-1}{V}
+\leq1.
+\end{aligned}
 \]
 The dual maximum is therefore attained, and strong duality gives
 \[
@@ -943,19 +1116,24 @@ When $\eta=0$, the diameter and centering constraints force $S=0$, so both
 sides are zero. This proves equation~\ref{eq:diameter-flow-duality} for
 every $\eta\geq0$.
 
+
 \paragraph{The active-edge condition.}
-Let $Y^\star$ and $\Phi^\star$ be flow and potential optimizers, whose
-existence was established above. Strong duality and the balance equations
-give
+Let $Y^\star$ be a flow optimizer and let $\Phi^\star$ be a centered
+potential optimizer. Set $S^\star=-\eta\Phi^\star$, which is an optimizer of
+the centered diameter oracle. Strong duality, the balance equations, and the pairing identity in equation~\ref{eq:flow-pairing} give
 \[
+\begin{aligned}
 0
-=
+&=
+\mathcal T(G)-\inner{G}{\Phi^\star}_F \\
+&=
 \sum_{i<j}
-\left[
+\left(
 \norm{y_{ij}^\star}_2
 -
 \inner{\phi_i^\star-\phi_j^\star}{y_{ij}^\star}
-\right].
+\right).
+\end{aligned}
 \]
 Every summand is nonnegative because dual feasibility and
 Cauchy--Schwarz give
@@ -970,30 +1148,50 @@ Cauchy--Schwarz give
 \norm{y_{ij}^\star}_2
 \geq0.
 \]
-Their sum can vanish only if every summand vanishes. Thus, whenever
-$y_{ij}^\star\neq0$, equality in both inequalities requires
+Since their sum is zero, every summand must vanish. Thus, whenever
+$y_{ij}^\star\neq0$, equality throughout requires
 \[
 \phi_i^\star-\phi_j^\star
 =
 \frac{y_{ij}^\star}{\norm{y_{ij}^\star}_2}.
 \]
-Taking $S^\star=-\eta\Phi^\star$ yields
-\[
+Using $S^\star=-\eta\Phi^\star$ therefore gives
+\begin{equation}
 y_{ij}^\star\neq0
 \quad\Longrightarrow\quad
 s_i^\star-s_j^\star
 =
--\eta\frac{y_{ij}^\star}{\norm{y_{ij}^\star}_2},
+-\eta\frac{y_{ij}^\star}{\norm{y_{ij}^\star}_2}.
+\label{eq:cable-complementarity}
+\end{equation}
+Thus every edge used by an optimal flow is tight at the diameter bound.
+Other token pairs may also be tight.
+
+
+\paragraph{Mechanical interpretation and computational cost.}
+The balance equation may be written as
+\[
+-g_i+\sum_{j\neq i}y_{ij}=0.
 \]
-which proves equation~\ref{eq:cable-complementarity}. Thus every edge used by
-an optimal flow is tight at the diameter bound; other token pairs may also be
-tight.
+Thus $-g_i$ can be viewed as an external force applied at token $i$, while the
+vectors $y_{ij}$ are internal forces that balance it
+\citep{ciosmak2021matrixholdersinequalitydivergence}. This is the source of
+the term ``tension.'' Equation~\ref{eq:cable-complementarity} says that every
+pair carrying nonzero tension is stretched to the full diameter in the
+direction opposite to that tension.
+
+The direct flow formulation contains one $d$-dimensional variable for each of
+the $\binom{V}{2}$ token pairs. An optimal flow may be sparse, but the
+formulation must allow every pair and therefore contains $O(V^2d)$ scalar
+variables. This makes a direct solution unsuitable for every training step
+and motivates the $O(Vd)$ RowNorm approximation in the main text.
+
 
 \section{Proof of the projected RowNorm guarantee}
 \label{app:rownorm-proof}
 
-In this section, we prove equations~\ref{eq:rownorm-radius-oracle}
-and~\ref{eq:rownorm-guarantee}, including sharpness of the latter.
+In this section, we prove equations~\ref{eq:projected-rownorm},
+and the guarantee in equation~\ref{eq:rownorm-guarantee}, including sharpness of the latter.
 Let $\one^\top G=0$, define
 $\Sigma_G=\sum_i\norm{g_i}_2$, and recall that $PG=G$.
 
@@ -1167,5 +1365,6 @@ the simplex center. Since $J_k\leq1$, these additional rows do not increase
 the diameter. The gradient and update remain centered, and neither objective
 value changes. Thus the lower bound is sharp for every $V\geq k+1$ under the
 fixed $\eta/2$ scaling in equation~\ref{eq:projected-rownorm}.
+
 
 \end{document}

@@ -53,11 +53,12 @@ DEFAULT_DATA = Path(__file__).with_name("data") / "final_curves.json"
 DEFAULT_OUTPUT = ROOT / "manuscript" / "Plots"
 
 BLUE = "#4C72B0"
-ORANGE = "#DD8452"
+RED = "#C44E52"
 RUN_STYLE = {
-    "adamw": {"label": "AdamW head", "color": BLUE},
-    "rownorm": {"label": "RowNorm head", "color": ORANGE},
+    "adamw": {"label": "AdamW", "color": RED},
+    "rownorm": {"label": "RowNorm", "color": BLUE},
 }
+LEGEND_METHODS = ("rownorm", "adamw")
 FILENAMES = (
     "loss_vs_training_tokens.pdf",
     "diameter_vs_training_tokens.pdf",
@@ -402,7 +403,7 @@ def _legend_handles(Line2D: Any) -> list[Any]:
             linewidth=1.8,
             label=RUN_STYLE[method]["label"],
         )
-        for method in METHODS
+        for method in LEGEND_METHODS
     ]
 
 
@@ -419,7 +420,7 @@ def _plot_loss(
     axis.set_ylabel("Validation loss")
 
     late_start = maximum_tokens * 0.68
-    inset = axis.inset_axes([0.48, 0.55, 0.49, 0.38])
+    inset = axis.inset_axes([0.47, 0.35, 0.50, 0.38])
     late_values = []
     for method in METHODS:
         method_series = series[method]
@@ -534,14 +535,14 @@ def generate_plots(
                 "LM head step diameter",
                 "log",
                 diameter,
-                r"Exact $D(S_t)$",
+                r"Row diameter $D(S_t)$",
             ),
             (
                 FILENAMES[2],
                 "Hilbert RMS perturbation",
                 "log",
                 hilbert,
-                "Fixed-panel Hilbert RMS",
+                "Hilbert RMS perturbation",
             ),
         )
         model_dir = output_dir / model.upper()
@@ -567,14 +568,14 @@ def generate_plots(
                     FuncFormatter,
                     MaxNLocator,
                 )
-            figure.subplots_adjust(left=0.19, right=0.98, top=0.97, bottom=0.28)
-            figure.legend(
+            figure.subplots_adjust(left=0.19, right=0.98, top=0.97, bottom=0.19)
+            axis.legend(
                 handles=_legend_handles(Line2D),
-                loc="lower center",
-                bbox_to_anchor=(0.5, 0.012),
-                ncols=2,
-                handlelength=2.2,
-                columnspacing=1.8,
+                loc="upper right",
+                ncols=1,
+                handlelength=1.7,
+                labelspacing=0.25,
+                borderaxespad=0.35,
             )
             destination = model_dir / filename
             _save_pdf(
