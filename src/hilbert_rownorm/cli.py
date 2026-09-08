@@ -5,14 +5,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-DEFAULT_WANDB_PROJECT = "Hilbert-RowNorm"
+DEFAULT_WANDB_PROJECT = "Hilbert-RowNorm-training"
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line interface without parsing process state."""
 
     parser = argparse.ArgumentParser(
-        description="Single-node trainer for the final LM-head optimizer experiments."
+        description="Single-node trainer for the final LM-head optimizer experiments.",
+        allow_abbrev=False,
     )
     parser.add_argument("--model", required=True)
     parser.add_argument("--optimizer", choices=("adamw", "muon"), required=True)

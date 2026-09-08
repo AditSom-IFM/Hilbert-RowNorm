@@ -39,11 +39,11 @@ head_geometry_submit_main() {
   local worker=${repo}/scripts/slurm_head_geometry.sh
   local storage_root=${HILBERT_STORAGE_ROOT:?HILBERT_STORAGE_ROOT must identify writable shared storage}
   local data_root=${DATA_ROOT:?DATA_ROOT must identify the pre-tokenized FineWeb directory}
-  local wandb_project=${WANDB_PROJECT:-Hilbert-RowNorm}
+  local wandb_project=${WANDB_PROJECT:-Hilbert-RowNorm-training}
   local partition=${SLURM_PARTITION:-main}
   local account=${SLURM_ACCOUNT:-}
   local qos=${SLURM_QOS:-}
-  local constraint=${SLURM_CONSTRAINT:-nvidia_h200}
+  local constraint=${SLURM_CONSTRAINT-nvidia_h200}
   local gpus=${SLURM_GPUS_PER_NODE:-8}
   local cpus=${SLURM_CPUS_PER_TASK:-32}
   local memory=${SLURM_MEMORY:-64G}
@@ -57,14 +57,6 @@ head_geometry_submit_main() {
     echo "head-geometry worker is missing or not executable: ${worker}" >&2
     return 1
   fi
-  local export_value
-  for export_value in "${repo}" "${storage_root}" "${data_root}" "${wandb_project}"; do
-    if [[ ${export_value} == *,* || ${export_value} == *$'\n'* ]]; then
-      echo "exported paths and project names cannot contain commas or newlines" >&2
-      return 2
-    fi
-  done
-
   local storage_directories=(
     "${storage_root}/checkpoints"
     "${storage_root}/slurm-logs"
@@ -106,9 +98,18 @@ head_geometry_submit_main() {
     sbatch_args+=(--constraint="${constraint}")
   fi
 
-  job=$(sbatch "${sbatch_args[@]}" \
-    --export="ALL,HILBERT_ROWNORM_REPO=${repo},EXPECTED_COMMIT=${expected_commit},HILBERT_STORAGE_ROOT=${storage_root},DATA_ROOT=${data_root},WANDB_PROJECT=${wandb_project}" \
-    "${worker}" "${submit_model}")
+  job=$(
+    unset WANDB_RUN_ID WANDB_RESUME WANDB_RESUME_FROM WANDB_FORK_FROM WANDB_SWEEP_ID \
+      WANDB_LAUNCH WANDB_LAUNCH_CONFIG_PATH
+    # With --export=ALL, Slurm prefers the sbatch environment over listed values.
+    # Set the validated paths and fresh pin in that environment directly.
+    HILBERT_ROWNORM_REPO=${repo} \
+      EXPECTED_COMMIT=${expected_commit} \
+      HILBERT_STORAGE_ROOT=${storage_root} \
+      DATA_ROOT=${data_root} \
+      WANDB_PROJECT=${wandb_project} \
+      sbatch "${sbatch_args[@]}" --export=ALL "${worker}" "${submit_model}"
+  )
   job=${job%%;*}
   echo "submitted ${submit_model} seeds 0, 1, and 2 as ${job}_[${task_range}]"
   echo "even tasks use the AdamW head; odd tasks use the RowNorm head"

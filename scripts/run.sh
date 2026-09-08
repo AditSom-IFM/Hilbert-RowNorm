@@ -11,6 +11,16 @@ optimizer=$2
 run_id=$3
 shift 3
 
+# These values define the directory and tracking identity checked by this wrapper.
+for argument in "$@"; do
+  case ${argument%%=*} in
+    --model|--optimizer|--output|--micro-batch|--wandb-project|--wandb-entity|--wandb-run-name)
+      echo "${argument%%=*} is managed by run.sh; use its positional arguments or environment settings" >&2
+      exit 2
+      ;;
+  esac
+done
+
 output_root=${OUTPUT_ROOT:-${PWD}/runs}
 for value in "${model}" "${optimizer}" "${run_id}"; do
   if [[ ! ${value} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
@@ -30,7 +40,7 @@ if [[ -e ${output} ]]; then
 fi
 
 wandb_args=(
-  --wandb-project "${WANDB_PROJECT:-Hilbert-RowNorm}"
+  --wandb-project "${WANDB_PROJECT:-Hilbert-RowNorm-training}"
   --wandb-run-name "${WANDB_RUN_NAME:-${run_id}}"
 )
 if [[ -n ${WANDB_ENTITY:-} ]]; then
@@ -48,7 +58,10 @@ if [[ -z ${MICRO_BATCH:-} ]]; then
 fi
 micro_batch=${MICRO_BATCH}
 
-# Keep public runs independent of the local Git history and source tree.
+# Each launch is a new experiment, even inside a resumed run or sweep shell.
+unset WANDB_RUN_ID WANDB_RESUME WANDB_RESUME_FROM WANDB_FORK_FROM WANDB_SWEEP_ID \
+  WANDB_LAUNCH WANDB_LAUNCH_CONFIG_PATH
+# Keep live training records independent of local Git history and source code.
 export WANDB_DISABLE_GIT=true
 export WANDB_DISABLE_CODE=true
 
