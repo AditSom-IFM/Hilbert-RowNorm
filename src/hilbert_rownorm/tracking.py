@@ -1,10 +1,15 @@
-"""Lightweight interval metrics and rank-zero W&B logging."""
+"""Interval metrics saved locally on rank zero, with optional W&B logging."""
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
+from uuid import uuid4
 
 import torch
 import torch.distributed as dist
@@ -20,6 +25,30 @@ from .tracking_records import (
     build_final_summary,
 )
 from .training_metrics import TrainingIntervalAccumulator
+
+INHERITED_RUN_VARIABLES = (
+    "WANDB_RUN_ID",
+    "WANDB_RESUME",
+    "WANDB_RESUME_FROM",
+    "WANDB_FORK_FROM",
+    "WANDB_SWEEP_ID",
+    "WANDB_LAUNCH",
+    "WANDB_LAUNCH_CONFIG_PATH",
+)
+
+
+def fresh_wandb_identity(project: str) -> dict[str, str]:
+    """Prevent fresh training from resuming a run or modifying the paper mirror."""
+
+    if project == "Hilbert-RowNorm":
+        raise ValueError(
+            "Hilbert-RowNorm is the curated paper project; use "
+            "Hilbert-RowNorm-training or another training project"
+        )
+    inherited = [name for name in INHERITED_RUN_VARIABLES if os.environ.get(name)]
+    if inherited:
+        raise ValueError("fresh training requires unsetting " + ", ".join(inherited))
+    return {"id": uuid4().hex, "resume": "never"}
 
 
 def optimizer_configuration(optimizers: list[Optimizer]) -> list[dict[str, Any]]:
@@ -64,7 +93,7 @@ def _role_lrs(optimizers: list[Optimizer]) -> tuple[dict[str, float], dict[str, 
 
 
 class Tracker:
-    """Aggregate without per-step host sync and emit one W&B run on rank zero."""
+    """Aggregate without per-step host sync; write local records and optional W&B."""
 
     def __init__(
         self,
@@ -101,59 +130,99 @@ class Tracker:
         self.last_validation_loss: float | None = None
         self.last_validation_hilbert: HilbertStepRms | None = None
         self.run = None
+        self.directory = directory
+        self._metrics_file: TextIO | None = None
 
-        if mode == "disabled":
-            return
         error = None
         if rank == 0:
             try:
-                import wandb
-
-                self.run = wandb.init(
-                    project=project,
-                    entity=entity,
-                    name=name,
-                    group=group,
-                    job_type="train",
-                    mode=mode,
-                    dir=str(directory),
-                    config=config,
-                    force=mode == "online",
-                    settings=wandb.Settings(
-                        init_timeout=60,
-                        disable_git=True,
-                        disable_code=True,
-                    ),
-                )
-                if self.run is None:
-                    raise RuntimeError("wandb.init() did not return a run")
-                self.run.define_metric("progress/tokens")
-                self.run.define_metric("progress/update")
-                for prefix in (
-                    "train",
-                    "validation",
-                    "optimizer",
-                    "performance",
-                    "memory",
-                    "events",
-                ):
-                    self.run.define_metric(f"{prefix}/*", step_metric="progress/tokens")
-                self.run.define_metric(
-                    "diagnostics/*", step_metric="progress/update"
-                )
-                self.run.define_metric(
-                    "validation/loss", step_metric="progress/tokens", summary="min"
-                )
+                self._metrics_file = (directory / "metrics.jsonl").open("x")
+                with (directory / "config.json").open("x") as config_file:
+                    json.dump(config, config_file, indent=2, allow_nan=False)
+                    config_file.write("\n")
+                if mode != "disabled":
+                    self._start_wandb(
+                        project=project,
+                        entity=entity,
+                        name=name,
+                        group=group,
+                        mode=mode,
+                        directory=directory,
+                        config=config,
+                    )
             except Exception as exception:
                 error = f"{type(exception).__name__}: {exception}"
+                self._finish_wandb_after_error()
+                self._close_metrics()
         if dist.is_initialized():
             failed = torch.tensor(int(error is not None), device=device)
             dist.broadcast(failed, src=0)
             if failed.item():
-                raise RuntimeError(error or "W&B initialization failed on rank zero")
+                raise RuntimeError(error or "tracking initialization failed on rank zero")
         elif error:
             raise RuntimeError(error)
         self.started = self.last_log_time = time.perf_counter()
+
+    def _start_wandb(
+        self,
+        *,
+        project: str,
+        entity: str | None,
+        name: str,
+        group: str,
+        mode: str,
+        directory: Path,
+        config: dict[str, Any],
+    ) -> None:
+        identity = fresh_wandb_identity(project)
+        import wandb
+
+        self.run = wandb.init(
+            **identity,
+            project=project,
+            entity=entity,
+            name=name,
+            group=group,
+            job_type="train",
+            mode=mode,
+            dir=str(directory),
+            config=config,
+            force=mode == "online",
+            settings=wandb.Settings(init_timeout=60, disable_git=True, disable_code=True),
+        )
+        if self.run is None:
+            raise RuntimeError("wandb.init() did not return a run")
+        self.run.define_metric("progress/tokens")
+        self.run.define_metric("progress/update")
+        for prefix in ("train", "validation", "optimizer", "performance", "memory", "events"):
+            self.run.define_metric(f"{prefix}/*", step_metric="progress/tokens")
+        self.run.define_metric("diagnostics/*", step_metric="progress/update")
+        self.run.define_metric("validation/loss", step_metric="progress/tokens", summary="min")
+
+    def _finish_wandb_after_error(self) -> None:
+        """Mark a started run failed without replacing the primary exception."""
+
+        if self.run is not None:
+            try:
+                self.run.finish(exit_code=1)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "W&B shutdown failed while handling a tracking error", exc_info=True
+                )
+
+    def _close_metrics(self) -> None:
+        """Close the sink, preserving any exception already being handled."""
+
+        error_in_flight = sys.exc_info()[0] is not None
+        if self._metrics_file is not None and not self._metrics_file.closed:
+            try:
+                self._metrics_file.close()
+            except Exception:
+                if not error_in_flight:
+                    raise
+                logging.getLogger(__name__).warning(
+                    "Local metrics close failed while handling a tracking error", exc_info=True
+                )
 
     @property
     def active(self) -> bool:
@@ -248,22 +317,38 @@ class Tracker:
                         "checkpoint_update": update,
                     }
                 )
+        assert self._metrics_file is not None
+        self._metrics_file.write(json.dumps(record, allow_nan=False) + "\n")
+        self._metrics_file.flush()
         if self.run is not None:
             self.run.log(record)
 
     def finish(self, updates: int, exit_code: int) -> None:
-        if self.rank != 0 or self.run is None:
+        if self.rank != 0:
             return
-        if exit_code == 0:
-            elapsed = time.perf_counter() - self.started
-            self.run.summary.update(
-                build_final_summary(
+        try:
+            summary: dict[str, Any] = {"exit_code": exit_code}
+            if exit_code == 0:
+                final = build_final_summary(
                     updates=updates,
                     tokens_per_step=self.tokens_per_step,
                     parameter_count=self.parameter_count,
-                    elapsed_seconds=elapsed,
+                    elapsed_seconds=time.perf_counter() - self.started,
                     validation_loss=self.last_validation_loss,
                     validation_hilbert=self.last_validation_hilbert,
                 )
-            )
-        self.run.finish(exit_code=exit_code)
+                summary.update(final)
+                if self.run is not None:
+                    self.run.summary.update(final)
+            self._close_metrics()
+            with (self.directory / "summary.json").open("x") as summary_file:
+                json.dump(summary, summary_file, indent=2, allow_nan=False)
+                summary_file.write("\n")
+        except Exception:
+            self._finish_wandb_after_error()
+            raise
+        else:
+            if self.run is not None:
+                self.run.finish(exit_code=exit_code)
+        finally:
+            self._close_metrics()

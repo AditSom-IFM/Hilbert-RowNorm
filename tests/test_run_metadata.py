@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import torch
 
 from hilbert_rownorm.config import ModelConfig
-from hilbert_rownorm.run_metadata import build_run_config
+from hilbert_rownorm.run_metadata import build_run_config, precision_metadata
 from hilbert_rownorm.run_plan import RunPlan
 
 
@@ -146,7 +146,9 @@ def test_run_config_records_the_retained_geometry_controls(tmp_path: Path) -> No
         "warmup_steps": 1,
         "gradient_clipping": False,
         "actual_eval_tokens": 96,
-        "precision": "FP32 params / BF16 compute / FP32 logits",
+        **precision_metadata(None),
+        "diameter_algorithm": "centered_cdist_v2",
+        "hilbert_panel_selection": "first_tokens_per_rank_v1",
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "device_name": "CPU",
@@ -161,3 +163,23 @@ def test_run_config_records_the_retained_geometry_controls(tmp_path: Path) -> No
     assert obsolete.isdisjoint(result)
     assert str(tmp_path) not in repr(result)
     assert "wandb_entity" not in result
+
+
+def test_precision_describes_arithmetic_not_only_result_cast():
+    cpu = precision_metadata(None)
+    gpu = precision_metadata(torch.bfloat16)
+    assert cpu["precision"] == "FP32 params / FP32 compute / FP32 loss"
+    assert cpu["precision_details"]["autocast"] is None
+    assert cpu["precision_details"]["logit_matmul"] == "FP32"
+    assert gpu["precision"] == "FP32 params / BF16 compute / FP32 loss"
+    assert gpu["precision_details"] == {
+        "parameters": "float32",
+        "optimizer_states": "float32",
+        "autocast": "bfloat16",
+        "logit_matmul": "BF16",
+        "logits_after_cast": "float32",
+        "cross_entropy": "float32",
+        "hilbert_matmul": "BF16",
+        "hilbert_range": "float32",
+        "hilbert_sum_of_squares": "float64",
+    }

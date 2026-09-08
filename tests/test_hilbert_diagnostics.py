@@ -49,13 +49,55 @@ def test_hilbert_rms_reduces_only_the_reported_squared_sum(
     monkeypatch.setattr(diagnostics.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(diagnostics.dist, "all_reduce", all_reduce)
 
+    local_square_sum = accumulator.square_sum.clone()
     result = accumulator.compute()
+    repeated = accumulator.compute()
     combined = torch.cat((local, remote))
     ranges = combined.amax(dim=1) - combined.amin(dim=1)
 
     assert result.rms == pytest.approx(ranges.square().mean().sqrt().item())
     assert result.tokens == 3
-    assert calls == [((), torch.float64), ((), torch.int64)]
+    assert repeated == result
+    assert torch.equal(accumulator.square_sum, local_square_sum)
+    assert accumulator.tokens == local.shape[0]
+    assert calls == [((), torch.float64), ((), torch.int64)] * 2
+
+
+def test_hilbert_rms_allows_add_after_distributed_compute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = torch.tensor([[1.0, 3.0]])
+    remote = torch.tensor([[2.0, 2.0], [-4.0, 0.0]])
+    accumulator = HilbertRmsAccumulator(torch.device("cpu"))
+    remote_accumulator = HilbertRmsAccumulator(torch.device("cpu"))
+    accumulator.add(local)
+    remote_accumulator.add(remote)
+
+    def all_reduce(value: torch.Tensor) -> None:
+        if value.dtype == torch.float64:
+            value += remote_accumulator.square_sum
+        else:
+            value += remote_accumulator.tokens
+
+    monkeypatch.setattr(diagnostics.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(diagnostics.dist, "all_reduce", all_reduce)
+
+    first = accumulator.compute()
+    assert first.tokens == 3
+
+    later_local = torch.tensor([[1.0, 4.0]])
+    later_remote = torch.tensor([[5.0, -1.0]])
+    accumulator.add(later_local)
+    remote_accumulator.add(later_remote)
+    result = accumulator.compute()
+    combined = torch.cat((local, remote, later_local, later_remote))
+    ranges = combined.amax(dim=1) - combined.amin(dim=1)
+
+    assert result.rms == pytest.approx(ranges.square().double().mean().sqrt().item())
+    assert result.tokens == 5
+    assert accumulator.square_sum.item() == 13
+    assert accumulator.tokens == 2
+    assert accumulator.compute() == result
 
 
 @pytest.mark.parametrize("step_logits", [torch.ones(3), torch.ones(0, 2), torch.ones(2, 0)])

@@ -40,6 +40,8 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
         raise ValueError("min_lr_ratio must be in [0, 1]")
     if not math.isfinite(args.max_gradient_norm) or args.max_gradient_norm <= 0:
         raise ValueError("max_gradient_norm must be finite and positive")
+    if args.eval_tokens < 1:
+        raise ValueError("eval_tokens must be positive")
     diameter_every_log = getattr(args, "exact_head_diameter_every_log", False)
     diameter_block_rows = getattr(args, "exact_head_diameter_block_rows", 4_096)
     hilbert_probe_tokens = getattr(args, "hilbert_step_probe_tokens", 0)
@@ -81,7 +83,11 @@ def build_run_plan(
 
 
 def evaluation_batches(requested_tokens: int, tokens_per_batch: int) -> tuple[int, int]:
-    """Return the validation batch count and the corresponding actual token count."""
+    """Floor positive token requests to full batches, with a one-batch minimum."""
 
+    if requested_tokens < 1:
+        raise ValueError("requested evaluation tokens must be positive")
+    if tokens_per_batch < 1:
+        raise ValueError("evaluation tokens per batch must be positive")
     batches = max(1, requested_tokens // tokens_per_batch)
     return batches, batches * tokens_per_batch

@@ -11,6 +11,7 @@ from torch.optim import Optimizer
 
 from .config import ModelConfig
 from .data import FineWebBatchLoader
+from .head_geometry import DIAMETER_ALGORITHM
 from .run_plan import RunPlan
 from .tracking import optimizer_configuration
 
@@ -39,6 +40,30 @@ TRACKED_ARGUMENTS = (
 )
 
 
+def precision_metadata(compute_dtype: torch.dtype | None) -> dict[str, Any]:
+    """Describe arithmetic, not the dtype of a tensor after an explicit cast."""
+
+    compute = "FP32" if compute_dtype is None else str(compute_dtype).removeprefix("torch.")
+    if compute_dtype == torch.bfloat16:
+        compute = "BF16"
+    return {
+        "precision": f"FP32 params / {compute} compute / FP32 loss",
+        "precision_details": {
+            "parameters": "float32",
+            "optimizer_states": "float32",
+            "autocast": None
+            if compute_dtype is None
+            else str(compute_dtype).removeprefix("torch."),
+            "logit_matmul": compute,
+            "logits_after_cast": "float32",
+            "cross_entropy": "float32",
+            "hilbert_matmul": compute,
+            "hilbert_range": "float32",
+            "hilbert_sum_of_squares": "float64",
+        },
+    }
+
+
 def build_run_config(
     args: Namespace,
     config: ModelConfig,
@@ -51,6 +76,8 @@ def build_run_config(
     plan: RunPlan,
     actual_val_tokens: int,
     device_name: str,
+    *,
+    compute_dtype: torch.dtype | None = None,
 ) -> dict[str, Any]:
     """Build the exact tracking configuration used to describe a run."""
 
@@ -76,7 +103,9 @@ def build_run_config(
         "max_gradient_norm": args.max_gradient_norm,
         "gradient_clipping": not args.no_gradient_clipping,
         "actual_eval_tokens": actual_val_tokens,
-        "precision": "FP32 params / BF16 compute / FP32 logits",
+        **precision_metadata(compute_dtype),
+        "diameter_algorithm": DIAMETER_ALGORITHM,
+        "hilbert_panel_selection": "first_tokens_per_rank_v1",
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "device_name": device_name,
