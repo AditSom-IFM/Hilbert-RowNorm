@@ -379,18 +379,56 @@ def test_plot_series_aggregates_replicates_with_sample_standard_deviation() -> N
     assert series["upper"][0] == pytest.approx(5.02)
 
 
-def test_generate_plots_writes_only_nine_expected_pdfs(tmp_path: Path) -> None:
-    pytest.importorskip("matplotlib")
+def test_plot_payload_validation_preserves_provenance_and_is_idempotent() -> None:
     manifest, payload = make_campaign()
 
-    destinations = plotter.generate_plots(payload, tmp_path, manifest)
+    validated = plotter.validate_payload(payload, manifest)
+
+    assert validated["source_manifest_sha256"] == payload["source_manifest_sha256"]
+    assert validated["runs"] == payload["runs"]
+    assert plotter.validate_payload(validated, manifest) == validated
+
+
+def test_load_then_generate_writes_nine_pdfs_with_unobstructed_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("matplotlib")
+    manifest, payload = make_campaign()
+    source = tmp_path / "curves.json"
+    source.write_text(json.dumps(payload))
+    output_dir = tmp_path / "plots"
+    save_pdf = plotter._save_pdf
+
+    def check_layout_and_save(figure, path, **kwargs):
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        axis = figure.axes[0]
+        axis_bounds = axis.get_tightbbox(renderer)
+        legend_bounds = figure.legends[0].get_window_extent(renderer)
+        for bounds in (axis_bounds, legend_bounds):
+            assert bounds.x0 >= 0
+            assert bounds.y0 >= 0
+            assert bounds.x1 <= figure.bbox.x1
+            assert bounds.y1 <= figure.bbox.y1
+        assert legend_bounds.y1 < axis_bounds.y0
+        assert axis.get_title() == ""
+        for child_axis in (axis, *axis.child_axes):
+            assert all(line.get_marker() == "None" for line in child_axis.lines)
+            assert all(line.get_linestyle() == "-" for line in child_axis.lines)
+        save_pdf(figure, path, **kwargs)
+
+    monkeypatch.setattr(plotter, "_save_pdf", check_layout_and_save)
+
+    destinations = plotter.generate_plots(
+        plotter.load_payload(source, manifest), output_dir, manifest
+    )
 
     expected = {
         Path(model.upper()) / filename
         for model in exporter.MODEL_SPECS
         for filename in plotter.FILENAMES
     }
-    assert {path.relative_to(tmp_path) for path in destinations} == expected
-    generated = {path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file()}
+    assert {path.relative_to(output_dir) for path in destinations} == expected
+    generated = {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
     assert generated == expected
     assert all(path.read_bytes().startswith(b"%PDF") for path in destinations)

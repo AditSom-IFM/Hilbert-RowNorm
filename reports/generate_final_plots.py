@@ -290,6 +290,7 @@ def validate_payload(
     )
     return {
         "schema_version": SCHEMA_VERSION,
+        "source_manifest_sha256": expected_manifest_sha256,
         "source_project": payload["source_project"],
         "model_specs": {model: dict(raw_specs[model]) for model in MODEL_SPECS},
         "runs": runs,
@@ -420,7 +421,7 @@ def _plot_loss(
     axis.set_ylabel("Validation loss")
 
     late_start = maximum_tokens * 0.68
-    inset = axis.inset_axes([0.47, 0.35, 0.50, 0.38])
+    inset = axis.inset_axes([0.47, 0.46, 0.50, 0.45])
     late_values = []
     for method in METHODS:
         method_series = series[method]
@@ -550,7 +551,7 @@ def generate_plots(
         for filename, metadata_title, plot_kind, plot_series, ylabel in definitions:
             # The manuscript places three panels across a two-column figure,
             # so use source fonts that remain legible after scaling.
-            figure, axis = plt.subplots(figsize=(4.2, 3.55))
+            figure, axis = plt.subplots(figsize=(4.2, 3.75))
             if plot_kind == "loss":
                 _plot_loss(
                     axis,
@@ -568,13 +569,16 @@ def generate_plots(
                     FuncFormatter,
                     MaxNLocator,
                 )
-            figure.subplots_adjust(left=0.19, right=0.98, top=0.97, bottom=0.19)
-            axis.legend(
+            # Reserve a legend row below the x label and enough right margin
+            # for the longest endpoint tick (12.5B) without covering any data.
+            figure.subplots_adjust(left=0.19, right=0.93, top=0.97, bottom=0.29)
+            figure.legend(
                 handles=_legend_handles(Line2D),
-                loc="upper right",
-                ncols=1,
+                loc="lower center",
+                bbox_to_anchor=(0.56, 0.01),
+                ncols=2,
                 handlelength=1.7,
-                labelspacing=0.25,
+                columnspacing=1.2,
                 borderaxespad=0.35,
             )
             destination = model_dir / filename

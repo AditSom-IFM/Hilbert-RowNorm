@@ -537,7 +537,7 @@ where $\lambda=0.1$ for AdamW and $\lambda=0$ for RowNorm. We record the row dia
 \[
 D(S_t)=\max_{i<j}\norm{(S_t)_{i:}-(S_t)_{j:}}_2
 \]
-every 10 updates and at the final update. For the Hilbert diagnostic, we fix a panel of $N=8{,}192$ validation token positions. After update $t$, we recompute the hidden states of this panel under the updated model and denote them by $h_{t,\ell}^{\mathrm{post}}$. The perturbation at position
+every 10 updates and at the final update. These reported diameters use the original exhaustive blocked FP32 distance calculation; they are not recomputed using later numerical revisions of the diagnostic. For the Hilbert diagnostic, we fix a panel of $N=8{,}192$ validation token positions, taking the first $1{,}024$ positions assigned to each GPU. The panel is shared within a model scale, but differs across scales because the per-GPU microbatch sizes differ. After update $t$, we recompute the hidden states of this panel under the updated model and denote them by $h_{t,\ell}^{\mathrm{post}}$. The perturbation at position
 $\ell$ is
 \[
 \delta_{t,\ell}
@@ -548,7 +548,7 @@ We report the root mean square
 \[
 \left(\frac{1}{N}\sum_{\ell=1}^N \delta_{t,\ell}^2\right)^{1/2}
 \]
-every 500 updates and at the final update. This statistic measures a single
+every 500 updates and at the final update. The product $S_t h_{t,\ell}^{\mathrm{post}}$ is computed under BF16 autocast and cast to FP32 before taking its range; the squared ranges are summed in FP64. This statistic measures a single
 optimizer increment on the fixed validation panel. It is not the supremum over
 all bounded hidden states or the cumulative drift from initialization.
 
