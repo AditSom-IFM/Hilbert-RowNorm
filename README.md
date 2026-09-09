@@ -11,7 +11,7 @@ projective distance makes the functional size of a head update equal to the
 Euclidean diameter of its token rows. The resulting steepest-descent problem
 has an exact minimum-tension dual. Projected RowNorm solves a stronger
 covering-radius problem in linear time, satisfies the original diameter bound,
-and retains at least \(1/\sqrt{2}\) of the optimal instantaneous linear
+and retains at least $1/\sqrt{2}$ of the optimal instantaneous linear
 decrease. This guarantee assumes exact normalization of the same centered
 gradient that defines the objective; it does not directly cover the practical
 EMA-and-epsilon update used in training.
@@ -21,10 +21,10 @@ EMA-and-epsilon update used in training.
 The paper holds a Nesterov Muon backbone and AdamW input-embedding optimizer
 fixed, and compares two LM-head optimizers:
 
-- AdamW with \((\beta_1,\beta_2)=(0.9,0.999)\),
-  \(\epsilon=10^{-10}\), and weight decay \(0.1\);
-- RowNorm with a bias-corrected EMA, \(\beta=0.95\),
-  \(\epsilon=10^{-8}\), and no head weight decay.
+- AdamW with $(\beta_1,\beta_2)=(0.9,0.999)$,
+  $\epsilon=10^{-10}$, and weight decay $0.1$;
+- RowNorm with a bias-corrected EMA, $\beta=0.95$,
+  $\epsilon=10^{-8}$, and no head weight decay.
 
 The complete matrix contains 18 runs: 190M, 380M, and 640M models; AdamW and
 RowNorm heads; and seeds 0, 1, and 2. All runs use a nominal budget of 20
