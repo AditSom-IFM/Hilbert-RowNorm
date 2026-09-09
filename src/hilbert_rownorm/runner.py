@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from argparse import Namespace
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -48,6 +50,31 @@ class PreparedRun:
     run_config: dict[str, Any]
 
 
+def create_output_directory(
+    output: Path,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+) -> None:
+    """Reserve a fresh run directory and share rank-zero failures with peers."""
+
+    failure: list[str | None] = [None]
+    creation_error: OSError | None = None
+    if rank == 0:
+        try:
+            output.mkdir(parents=True, exist_ok=False)
+        except OSError as error:
+            creation_error = error
+            failure[0] = (
+                f"cannot create fresh output directory {output}: {error}; "
+                "choose an unused, writable --output directory"
+            )
+    if world_size > 1:
+        dist.broadcast_object_list(failure, src=0, device=device)
+    if failure[0] is not None:
+        raise RuntimeError(failure[0]) from creation_error
+
+
 def prepare_run(
     args: Namespace,
     rank: int,
@@ -59,6 +86,7 @@ def prepare_run(
     validate_arguments(args, world_size)
     config = model_preset(args.model)
     plan = build_run_plan(args, config, world_size)
+    create_output_directory(args.output, rank, world_size, device)
 
     torch.manual_seed(args.seed + rank)
     model = TransformerLM(
@@ -109,8 +137,6 @@ def prepare_run(
     )
     device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
 
-    if rank == 0:
-        args.output.mkdir(parents=True, exist_ok=True)
     run_config = build_run_config(
         args,
         config,
@@ -123,6 +149,7 @@ def prepare_run(
         plan,
         actual_val_tokens,
         device_name,
+        compute_dtype=getattr(model, "compute_dtype", None),
     )
     return PreparedRun(
         args=args,
@@ -210,9 +237,7 @@ def execute_updates(run: PreparedRun, tracker: Tracker) -> None:
         )
         tracker.add(loss, grad_norm)
         exact_diameter_due = run.head_geometry.exact_diameter_due(update)
-        head_diameter = run.head_geometry.exact_diameter(
-            exact_diameter_due and tracker.active
-        )
+        head_diameter = run.head_geometry.exact_diameter(exact_diameter_due)
 
         should_evaluate = args.eval_every > 0 and (
             update % args.eval_every == 0 or update == plan.run_steps
@@ -286,7 +311,17 @@ def run_pretraining(
         final_updates = run.plan.run_steps
         exit_code = 0
     finally:
-        if tracker is not None:
-            tracker.finish(final_updates, exit_code)
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        try:
+            if tracker is not None:
+                try:
+                    tracker.finish(final_updates, exit_code)
+                except Exception:
+                    if exit_code == 0:
+                        raise
+                    logging.getLogger(__name__).warning(
+                        "Tracking shutdown failed while handling the run failure",
+                        exc_info=True,
+                    )
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()

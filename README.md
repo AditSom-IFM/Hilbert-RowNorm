@@ -1,8 +1,8 @@
 # Hilbert-RowNorm
 
 Code for *Toward a First-Principles Update Geometry for the Language-Model
-Head*. A LaTeX snapshot is available in
-[`manuscript/main.tex`](manuscript/main.tex).
+Head*. This repository contains the training code, experiment records, and
+plotting tools. The paper's LaTeX source is maintained separately.
 
 ## Key result
 
@@ -12,7 +12,9 @@ Euclidean diameter of its token rows. The resulting steepest-descent problem
 has an exact minimum-tension dual. Projected RowNorm solves a stronger
 covering-radius problem in linear time, satisfies the original diameter bound,
 and retains at least \(1/\sqrt{2}\) of the optimal instantaneous linear
-decrease.
+decrease. This guarantee assumes exact normalization of the same centered
+gradient that defines the objective; it does not directly cover the practical
+EMA-and-epsilon update used in training.
 
 ## Paper experiments
 
@@ -38,6 +40,8 @@ The paper reports three curves:
 3. RMS Hilbert perturbation on a fixed panel of 8,192 validation tokens.
 
 The diameter and Hilbert measurements exclude direct decoupled weight decay.
+The panel is fixed within each model scale and shared by its paired runs;
+different microbatch sizes select different token positions across scales.
 The complete optimizer settings are defined in
 [`optimizer_recipes.py`](src/hilbert_rownorm/optimizer_recipes.py).
 
@@ -73,7 +77,7 @@ Set these values for your environment before submitting:
 export DATA_ROOT=/path/to/fineweb100b
 export HILBERT_STORAGE_ROOT=/path/to/shared/run-storage
 export WANDB_ENTITY=your-wandb-entity
-export WANDB_PROJECT=Hilbert-RowNorm
+export WANDB_PROJECT=Hilbert-RowNorm-training
 export TRAIN_PYTHON="$PWD/.venv/bin/python"
 
 scripts/submit_head_geometry.sh 190m
@@ -85,6 +89,11 @@ Each command submits six one-node array tasks: the two head optimizers for
 seeds 0, 1, and 2. The submitter verifies a clean Git checkout and pins that
 checkout for the workers. New W&B runs deliberately disable Git and source
 capture, and their configuration omits local data and output paths.
+Fresh runs go to `Hilbert-RowNorm-training` by default, not the curated paper
+project. Each receives a new W&B ID with resumption disabled. The shell
+launchers clear inherited W&B run, resume, sweep, and launch identity; direct
+Python invocation rejects those variables instead of silently reusing them.
+An existing output directory is rejected. Use a new directory for each run.
 
 The resource defaults reproduce the paper setup: eight H200 GPUs, 32 CPUs,
 64 GiB of host memory, and a 24-hour limit. The following variables adapt the
@@ -102,6 +111,8 @@ SLURM_TIME               default: 24:00:00
 SLURM_ARRAY_CONCURRENCY  default: 6
 ```
 
+Set `SLURM_CONSTRAINT=''` to omit the constraint on clusters without that label.
+
 The paper runs used PyTorch `2.13.0+cu126` with CUDA 12.6. Prepare that CUDA
 environment separately before exact replication; the default `uv sync` is
 intended for code inspection and CPU validation. `TRAIN_PYTHON`,
@@ -110,6 +121,39 @@ intended for code inspection and CPU validation. `TRAIN_PYTHON`,
 preflight. Changing hardware or software versions is useful for replication,
 but no longer reproduces the exact execution environment reported in the
 paper.
+
+AdamW backbone selection is retained for 190M and 380M with an AdamW head.
+The paper's Muon backbone supports both head optimizers at all three scales.
+Unsupported combinations fail explicitly; no untested 640M AdamW backbone
+recipe is inferred.
+
+## Local diagnostics and numerical conventions
+
+Every run writes `config.json`, `metrics.jsonl`, and `summary.json` under its
+output directory, including with `--wandb-mode disabled`. Metric lines are
+flushed at each report. Diameter logging still requires
+`--exact-head-diameter-every-log`; its cadence is `--log-every` plus the final
+update. Hilbert logging requires a positive `--hilbert-step-probe-tokens` and
+evaluation enabled. These flags are enabled by the paper matrix launcher.
+
+New runs record `diameter_algorithm=centered_cdist_v2`. This exhaustive blocked
+search removes a common row offset before computing distances and directly
+recomputes candidate pair distances. It preserves FP64 inputs. The name
+`exact` in the metric key means all pairs are searched, not exact arithmetic;
+floating-point rounding can still affect which candidate is selected.
+The frozen paper histories used uncentered FP32 distances (v1). They remain
+unchanged, and regenerated paper PDFs still plot those historical measurements.
+
+CUDA runs use BF16 autocast for the head and Hilbert matrix products, then cast
+their outputs to FP32 for cross entropy or the logit range. Hilbert squared
+ranges are summed in FP64. CPU runs use FP32 compute. New run metadata records
+these distinctions; the old mirror's shorter precision label does not imply
+FP32 matrix multiplication.
+
+Checkpoint files are inspection snapshots, not resumable training state: the
+trainer does not restore data-loader position or RNG state. Paper launches
+disable checkpoints and Slurm requeue. Do not use an old output directory as
+a resume mechanism.
 
 ## W&B records
 
@@ -149,7 +193,9 @@ uv run python reports/generate_final_plots.py
 ```
 
 The plotter creates the loss, exact-diameter, and Hilbert-RMS figures under
-`manuscript/Plots/`. Each solid curve is the pointwise mean over three seeds.
+[`manuscript/Plots/`](manuscript/Plots/). This directory contains only the
+retained plots; it does not require a LaTeX installation. Each solid curve is
+the pointwise mean over three seeds.
 The shaded region is the mean plus or minus one sample standard deviation; it
 is descriptive run-to-run variation, not a confidence interval.
 
@@ -181,12 +227,3 @@ uv run pytest
 uv run ruff check .
 bash -n scripts/*.sh
 ```
-
-## Build the paper
-
-```bash
-cd manuscript
-latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
-```
-
-The GitHub `Manuscript PDF` workflow also publishes `main.pdf` as an artifact.

@@ -103,6 +103,8 @@ head_geometry_main() {
     return 2
   fi
   head_geometry_resolve_plan "$1" "${task}" "${grid}" "${attempt}"
+  unset WANDB_RUN_ID WANDB_RESUME WANDB_RESUME_FROM WANDB_FORK_FROM WANDB_SWEEP_ID \
+    WANDB_LAUNCH WANDB_LAUNCH_CONFIG_PATH
 
   "${repo}/scripts/verify_launch_checkout.sh" \
     "${repo}" "${expected_commit}" >/dev/null
@@ -146,7 +148,7 @@ head_geometry_main() {
     WANDB_DATA_DIR=${storage_root}/wandb-data \
     WANDB_DISABLE_GIT=true \
     WANDB_DISABLE_CODE=true \
-    WANDB_PROJECT=${WANDB_PROJECT:-Hilbert-RowNorm} \
+    WANDB_PROJECT=${WANDB_PROJECT:-Hilbert-RowNorm-training} \
     WANDB_MODE=${wandb_mode} \
     WANDB_RUN_NAME=${run_id} \
     "${repo}/scripts/run.sh" "${model}" muon "${run_id}" "${train_args[@]}"

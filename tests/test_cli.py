@@ -30,6 +30,7 @@ def test_cli_exposes_the_final_optimizer_choices_and_tracking_defaults() -> None
     assert lm_head_optimizer.required is True
     assert lm_head_optimizer.choices == ("adamw", "rownorm")
     assert wandb_project.default == DEFAULT_WANDB_PROJECT
-    assert wandb_project.default == "Hilbert-RowNorm"
+    assert wandb_project.default == "Hilbert-RowNorm-training"
+    assert parser.allow_abbrev is False
     assert wandb_mode.default == "online"
     assert wandb_mode.choices == ("online", "offline", "disabled")

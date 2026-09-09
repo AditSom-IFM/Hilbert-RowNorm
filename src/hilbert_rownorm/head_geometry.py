@@ -9,6 +9,9 @@ from typing import Protocol, runtime_checkable
 import torch
 from torch import Tensor
 
+# Historical paper measurements used uncentered FP32 cdist (v1).
+DIAMETER_ALGORITHM = "centered_cdist_v2"
+
 
 @runtime_checkable
 class HeadStepProvider(Protocol):
@@ -39,7 +42,17 @@ def exact_diameter_update_schedule(
 
 @torch.inference_mode()
 def exact_row_diameter(matrix: Tensor, *, block_rows: int) -> float:
-    """Compute ``max_ij ||row_i-row_j||_2`` with bounded temporary storage."""
+    """Measure ``max_ij ||row_i-row_j||_2`` by an exhaustive blocked search.
+
+    Translation removes a common row offset before the matrix-multiplication
+    distance calculation. Each block's maximizing candidate is then evaluated
+    by direct subtraction of the original rows. FP64 input stays FP64; lower
+    precision inputs are promoted to FP32. Storage is O(V d + block_rows**2).
+
+    The compatibility name ``exact`` denotes all-pair coverage, not exact
+    arithmetic: floating-point rounding can still affect candidate selection.
+    This v2 arithmetic differs from the frozen, uncentered FP32 paper metrics.
+    """
 
     if matrix.ndim != 2 or matrix.shape[0] < 1 or matrix.shape[1] < 1:
         raise ValueError("diameter input must be a non-empty matrix")
@@ -47,20 +60,29 @@ def exact_row_diameter(matrix: Tensor, *, block_rows: int) -> float:
         raise TypeError("diameter input must be floating point")
     if not isinstance(block_rows, int) or block_rows < 1:
         raise ValueError("diameter block rows must be positive")
-    value = matrix.detach().to(dtype=torch.float32)
+    dtype = torch.float64 if matrix.dtype == torch.float64 else torch.float32
+    value = matrix.detach().to(dtype=dtype)
+    if not torch.isfinite(value).all():
+        raise ValueError("diameter input must contain only finite values")
+    centered = value - value[:1]
     maximum = value.new_zeros(())
     rows = value.shape[0]
     for left_start in range(0, rows, block_rows):
-        left = value[left_start : left_start + block_rows]
+        left = centered[left_start : left_start + block_rows]
         for right_start in range(left_start, rows, block_rows):
-            right = value[right_start : right_start + block_rows]
+            right = centered[right_start : right_start + block_rows]
             distances = torch.cdist(
                 left,
                 right,
                 p=2,
                 compute_mode="use_mm_for_euclid_dist",
             )
-            maximum = torch.maximum(maximum, distances.max())
+            candidate = distances.flatten().argmax().reshape(1)
+            left_index = candidate.div(right.shape[0], rounding_mode="floor") + left_start
+            right_index = candidate.remainder(right.shape[0]) + right_start
+            difference = value.index_select(0, left_index) - value.index_select(0, right_index)
+            distance = torch.linalg.vector_norm(difference)
+            maximum = torch.maximum(maximum, distance)
     result = float(maximum.item())
     if not math.isfinite(result):
         raise ValueError("diameter input must contain only finite values")
@@ -68,7 +90,7 @@ def exact_row_diameter(matrix: Tensor, *, block_rows: int) -> float:
 
 
 class HeadGeometry:
-    """Expose the latest head step and its scheduled exact diameter."""
+    """Expose the latest head step and its scheduled exhaustive diameter."""
 
     def __init__(
         self,
@@ -118,7 +140,7 @@ class HeadGeometry:
         return self.provider.lm_head_step()
 
     def exact_diameter(self, enabled: bool) -> float | None:
-        """Compute the latest exact step diameter on rank zero."""
+        """Compute the latest exhaustive step diameter on rank zero."""
 
         if not enabled or self.rank != 0:
             return None

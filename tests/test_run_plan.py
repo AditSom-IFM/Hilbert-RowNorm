@@ -24,6 +24,7 @@ def _arguments(**overrides: object) -> Namespace:
         "max_gradient_norm": 1.0,
         "max_steps": 3,
         "log_every": 10,
+        "eval_tokens": 100,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -64,6 +65,8 @@ def test_run_plan_derives_full_schedule_and_truncated_run() -> None:
         ({"warmup_fraction": 1.0}, r"warmup_fraction must be in \[0, 1\)"),
         ({"min_lr_ratio": 1.1}, r"min_lr_ratio must be in \[0, 1\]"),
         ({"max_gradient_norm": float("inf")}, "max_gradient_norm must be finite"),
+        ({"eval_tokens": 0}, "eval_tokens must be positive"),
+        ({"eval_tokens": -1}, "eval_tokens must be positive"),
     ],
 )
 def test_run_argument_validation(overrides: dict[str, object], message: str) -> None:
@@ -100,3 +103,21 @@ def test_evaluation_batches_preserve_flooring_with_a_one_batch_minimum(
     expected: tuple[int, int],
 ) -> None:
     assert evaluation_batches(requested_tokens, tokens_per_batch=32) == expected
+
+
+@pytest.mark.parametrize(
+    ("requested_tokens", "tokens_per_batch", "message"),
+    [
+        (0, 32, "requested evaluation tokens must be positive"),
+        (-1, 32, "requested evaluation tokens must be positive"),
+        (32, 0, "evaluation tokens per batch must be positive"),
+        (32, -1, "evaluation tokens per batch must be positive"),
+    ],
+)
+def test_evaluation_batches_rejects_nonpositive_token_counts(
+    requested_tokens: int,
+    tokens_per_batch: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        evaluation_batches(requested_tokens, tokens_per_batch)

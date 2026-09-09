@@ -38,18 +38,21 @@ class HilbertRmsAccumulator:
 
     @torch.no_grad()
     def compute(self) -> HilbertStepRms:
+        """Reduce a snapshot, retaining local totals for later adds/computes."""
+
+        square_sum = self.square_sum.clone()
         tokens = torch.tensor(
             self.tokens,
             device=self.square_sum.device,
             dtype=torch.int64,
         )
         if dist.is_initialized():
-            dist.all_reduce(self.square_sum)
+            dist.all_reduce(square_sum)
             dist.all_reduce(tokens)
         count = int(tokens.item())
         if count < 1:
             raise ValueError("cannot compute Hilbert diagnostics without hidden states")
-        rms = float(torch.sqrt(self.square_sum / count).item())
+        rms = float(torch.sqrt(square_sum / count).item())
         if not math.isfinite(rms):
             raise ValueError("Hilbert diagnostics require finite step logits")
         return HilbertStepRms(rms=rms, tokens=count)

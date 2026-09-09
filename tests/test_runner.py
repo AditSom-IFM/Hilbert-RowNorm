@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import hilbert_rownorm.runner as runner
+from hilbert_rownorm.cli import build_parser
 from hilbert_rownorm.config import ModelConfig
 from hilbert_rownorm.optimizer_recipes import OptimizerRecipe
 from hilbert_rownorm.run_plan import RunPlan
@@ -120,6 +121,14 @@ def test_prepare_run_preserves_deterministic_construction_order(
         lambda model, **kwargs: events.append(("ddp", model, kwargs)) or wrapped_model,
     )
 
+    def broadcast_output_status(values, *, src, device) -> None:
+        assert values == [None]
+        assert src == 0
+        assert device == torch.device("cpu")
+        assert args.output.is_dir()
+
+    monkeypatch.setattr(runner.dist, "broadcast_object_list", broadcast_output_status)
+
     class FakeLoader:
         shards = ("shard",)
         global_tokens_per_batch = 32
@@ -135,11 +144,12 @@ def test_prepare_run_preserves_deterministic_construction_order(
             events.append(("evaluation_batches", requested, size)) or (3, 96)
         ),
     )
-    monkeypatch.setattr(
-        runner,
-        "build_run_config",
-        lambda *values: events.append("run_config") or {"purpose": "test"},
-    )
+    def build_run_config(*values, **kwargs):
+        assert kwargs == {"compute_dtype": None}
+        events.append("run_config")
+        return {"purpose": "test"}
+
+    monkeypatch.setattr(runner, "build_run_config", build_run_config)
 
     prepared = runner.prepare_run(
         args,
@@ -223,9 +233,99 @@ def test_prepare_run_preserves_deterministic_construction_order(
     assert prepared.run_config == {"purpose": "test"}
 
 
+def test_prepare_run_rejects_the_final_parsed_output_before_allocating_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    checkpoint = existing / "final.pt"
+    checkpoint.write_bytes(b"previous run")
+    arguments = {
+        "model": "190M",
+        "optimizer": "adamw",
+        "lm-head-optimizer": "adamw",
+        "data": str(tmp_path / "data"),
+        "output": str(tmp_path / "unused"),
+        "micro-batch": "1",
+        "global-batch": "1",
+        "tokens-per-parameter": "1",
+        "seed": "0",
+        "warmup-fraction": "0.1",
+        "min-lr-ratio": "0.1",
+        "max-gradient-norm": "1",
+        "log-every": "1",
+        "eval-every": "1",
+        "eval-tokens": "32",
+        "save-every": "0",
+    }
+    argv = [argument for name, value in arguments.items() for argument in (f"--{name}", value)]
+    args = build_parser().parse_args([*argv, "--output", str(existing)])
+    monkeypatch.setattr(runner, "model_preset", lambda name: _config())
+
+    def allocate(*values, **kwargs):
+        pytest.fail("resource allocation ran before checking the output directory")
+
+    monkeypatch.setattr(runner.torch, "manual_seed", allocate)
+    monkeypatch.setattr(runner, "TransformerLM", allocate)
+
+    with pytest.raises(RuntimeError, match="choose an unused, writable --output"):
+        runner.prepare_run(args, 0, 1, torch.device("cpu"))
+
+    assert checkpoint.read_bytes() == b"previous run"
+    assert not (tmp_path / "unused").exists()
+
+
+@pytest.mark.parametrize("failure_kind", ["existing", "permission"])
+def test_output_creation_failure_reaches_every_rank_before_resource_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    args = Namespace(output=tmp_path)
+    monkeypatch.setattr(runner, "validate_arguments", lambda *values: None)
+    monkeypatch.setattr(runner, "model_preset", lambda *values: _config())
+    monkeypatch.setattr(runner, "build_run_plan", lambda *values: _plan())
+    args.model = "tiny"
+
+    if failure_kind == "permission":
+        def deny_creation(*values, **kwargs):
+            raise PermissionError("directory is not writable")
+
+        monkeypatch.setattr(Path, "mkdir", deny_creation)
+
+    def allocate(*values, **kwargs):
+        pytest.fail("resource allocation ran after output creation failed")
+
+    monkeypatch.setattr(runner.torch, "manual_seed", allocate)
+    broadcasts: list[str | None] = []
+    rank_zero_status: list[str | None] = []
+    for rank in (0, 1):
+        def broadcast(values, *, src, device, rank=rank):
+            assert src == 0
+            assert device == torch.device("cpu")
+            if rank == 0:
+                rank_zero_status[:] = values
+            else:
+                assert values == [None]
+                values[:] = rank_zero_status
+            broadcasts.append(values[0])
+
+        monkeypatch.setattr(runner.dist, "broadcast_object_list", broadcast)
+
+        with pytest.raises(RuntimeError, match="cannot create fresh output directory"):
+            runner.prepare_run(args, rank, 2, torch.device("cpu"))
+
+    assert len(broadcasts) == 2
+    assert broadcasts[0] == broadcasts[1]
+    assert broadcasts[0] is not None
+
+
+@pytest.mark.parametrize("tracking_active", [True, False])
 def test_final_update_collects_all_retained_outputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    tracking_active: bool,
 ) -> None:
     events: list[object] = []
     head_step = torch.ones(8, 4)
@@ -248,7 +348,7 @@ def test_final_update_collects_all_retained_outputs(
             return head_step if enabled else None
 
     class FakeTracker:
-        active = True
+        active = tracking_active
 
         def add(self, loss: torch.Tensor, norm: torch.Tensor) -> None:
             events.append(("tracker_add", loss.item(), norm.item()))
@@ -430,3 +530,41 @@ def test_run_pretraining_reports_failure_before_destroy(
         runner.run_pretraining(Namespace(), 0, 1, torch.device("cpu"))
 
     assert events == ["execute", ("finish", 0, 1), "destroy"]
+
+
+@pytest.mark.parametrize("fail_training", [False, True])
+def test_tracking_shutdown_failure_preserves_training_error_and_always_destroys(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fail_training: bool,
+) -> None:
+    events: list[object] = []
+    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3))
+    training_error = ValueError("training failed")
+    finish_error = RuntimeError("tracking shutdown failed")
+
+    class FakeTracker:
+        def finish(self, updates: int, exit_code: int) -> None:
+            events.append(("finish", updates, exit_code))
+            raise finish_error
+
+    def execute(run, tracker):
+        if fail_training:
+            raise training_error
+
+    monkeypatch.setattr(runner, "prepare_run", lambda *values: prepared)
+    monkeypatch.setattr(runner, "start_tracker", lambda run: FakeTracker())
+    monkeypatch.setattr(runner, "print_run_summary", lambda run: None)
+    monkeypatch.setattr(runner, "execute_updates", execute)
+    monkeypatch.setattr(runner.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(runner.dist, "destroy_process_group", lambda: events.append("destroy"))
+
+    expected = training_error if fail_training else finish_error
+    with pytest.raises(type(expected)) as caught:
+        runner.run_pretraining(Namespace(), 0, 1, torch.device("cpu"))
+
+    assert caught.value is expected
+    assert events == [("finish", 0 if fail_training else 3, int(fail_training)), "destroy"]
+    if fail_training:
+        assert "Tracking shutdown failed while handling the run failure" in caplog.text
+        assert "RuntimeError: tracking shutdown failed" in caplog.text
