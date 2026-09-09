@@ -158,7 +158,7 @@ a resume mechanism.
 ## W&B records
 
 The 18 retained records are hosted in the
-[`mbzuai-llm/Hilbert-RowNorm`](https://wandb.ai/mbzuai-llm/Hilbert-RowNorm)
+[`mbzuai-llm/Hilbert-RowNorm`](https://wandb.ai/mbzuai-llm/Hilbert-RowNorm/reports/Hilbert-RowNorm-pretraining-results--VmlldzoxNzkwMjE5Mg)
 W&B project. These are sanitized, lossless metric mirrors of the completed
 training runs; they were not re-executed when these records were created.
 Each record contains the scalar histories used in the paper, the six Training
@@ -172,7 +172,7 @@ W&B stores the appended scalar rows in automatically generated internal
 history artifact versions. Their manifests contain only storage digests and
 sizes; no user-authored artifact or training output was transferred.
 
-The curated [`Hilbert-RowNorm paper runs`](https://wandb.ai/mbzuai-llm/Hilbert-RowNorm?nw=oqqq232xphl)
+The curated [`Hilbert-RowNorm paper runs`](https://wandb.ai/mbzuai-llm/Hilbert-RowNorm/reports/Hilbert-RowNorm-pretraining-results--VmlldzoxNzkwMjE5Mg)
 workspace contains six Training panels and seven Optimizer panels. Every panel
 uses `progress/tokens` on the horizontal axis and includes all 18 runs.
 
