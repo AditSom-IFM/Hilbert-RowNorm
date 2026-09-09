@@ -1,8 +1,8 @@
 # Hilbert-RowNorm
 
 Code for *Toward a First-Principles Update Geometry for the Language-Model
-Head*. A LaTeX snapshot is available in
-[`manuscript/main.tex`](manuscript/main.tex).
+Head*. This repository contains the training code, experiment records, and
+plotting tools. The paper's LaTeX source is maintained separately.
 
 ## Key result
 
@@ -193,7 +193,9 @@ uv run python reports/generate_final_plots.py
 ```
 
 The plotter creates the loss, exact-diameter, and Hilbert-RMS figures under
-`manuscript/Plots/`. Each solid curve is the pointwise mean over three seeds.
+[`manuscript/Plots/`](manuscript/Plots/). This directory contains only the
+retained plots; it does not require a LaTeX installation. Each solid curve is
+the pointwise mean over three seeds.
 The shaded region is the mean plus or minus one sample standard deviation; it
 is descriptive run-to-run variation, not a confidence interval.
 
@@ -225,15 +227,3 @@ uv run pytest
 uv run ruff check .
 bash -n scripts/*.sh
 ```
-
-See [audit fixes and validation limits](docs/audit-fixes.md) for the review map,
-measurement-version change, and the unresolved full-run GPU parity check.
-
-## Build the paper
-
-```bash
-cd manuscript
-latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
-```
-
-The GitHub `Manuscript PDF` workflow also publishes `main.pdf` as an artifact.

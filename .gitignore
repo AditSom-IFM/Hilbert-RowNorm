@@ -20,14 +20,6 @@ wandb/
 *.pt
 *.pth
 *.safetensors
-# LaTeX build products
-*.aux
-*.bbl
-*.blg
-*.fdb_latexmk
-*.fls
+# Local process logs
 *.log
 *.out
-*.pdfsync
-*.synctex.gz
-*.xdv
