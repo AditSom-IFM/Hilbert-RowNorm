@@ -2,7 +2,7 @@
 
 Code for *Toward a First-Principles Update Geometry for the Language-Model
 Head*. This repository contains the training code, experiment records, and
-plotting tools. The paper's LaTeX source is maintained separately.
+plotting tools.
 
 ## Key result
 
