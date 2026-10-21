@@ -121,6 +121,7 @@ def test_run_config_records_the_retained_geometry_controls(tmp_path: Path) -> No
             "rope_theta": 10_000.0,
             "rms_norm_eps": 1e-6,
             "initializer_std": 0.02,
+            "qk_norm": True,
         },
         "parameter_count": config.parameter_count,
         "optimizer_groups": [

@@ -61,14 +61,18 @@ class Attention(nn.Module):
         self.k = nn.Linear(config.dim, config.dim, bias=False, **factory)
         self.v = nn.Linear(config.dim, config.dim, bias=False, **factory)
         self.out = nn.Linear(config.dim, config.dim, bias=False, **factory)
+        self.qk_norm = config.qk_norm
         self.q_norm = FixedRMSNorm(config.head_dim, config.rms_norm_eps)
         self.k_norm = FixedRMSNorm(config.head_dim, config.rms_norm_eps)
 
     def forward(self, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         batch, length, width = x.shape
         shape = (batch, length, self.n_heads, self.head_dim)
-        q = apply_rotary(self.q_norm(self.q(x).view(shape)), cos, sin).transpose(1, 2)
-        k = apply_rotary(self.k_norm(self.k(x).view(shape)), cos, sin).transpose(1, 2)
+        q, k = self.q(x).view(shape), self.k(x).view(shape)
+        if self.qk_norm:
+            q, k = self.q_norm(q), self.k_norm(k)
+        q = apply_rotary(q, cos, sin).transpose(1, 2)
+        k = apply_rotary(k, cos, sin).transpose(1, 2)
         v = self.v(x).view(shape).transpose(1, 2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         return self.out(y.transpose(1, 2).contiguous().view(batch, length, width))
@@ -150,6 +154,12 @@ class TransformerLM(nn.Module):
         """Matrices owned by Muon in a Muon-backbone recipe."""
 
         yield from self.blocks.parameters()
+
+    def qk_pairs(self) -> Iterator[tuple[nn.Parameter, nn.Parameter]]:
+        """Per-layer (query, key) weights, in ``nn.Linear`` (out, in) layout."""
+
+        for block in self.blocks:
+            yield block.attn.q.weight, block.attn.k.weight
 
     def num_parameters(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
