@@ -37,6 +37,11 @@ _MUON_HEAD_LRS = {
     "640m": {"adamw": 0.002, "rownorm": 0.0016},
 }
 
+# Compositional Muon on query/key pairs. Learning rate, momentum, Nesterov,
+# weight decay, and Newton-Schulz settings are inherited from the Muon
+# backbone; mp=2 cancels the half-split budget at initialization.
+COMPOSITIONAL_QK_DEFAULTS = {"mp": 2.0, "damping": 1e-2, "whitening": "isotropic"}
+
 # LM-head keys a sweep may override, per head algorithm.
 HEAD_OVERRIDE_KEYS = {
     "adamw": ("lr", "betas", "weight_decay"),
@@ -143,11 +148,15 @@ def resolve_optimizer_recipe(
     lm_head_optimizer: str,
     *,
     head_overrides: Mapping[str, Any] | None = None,
+    attention_qk: str = "muon",
+    attention_qk_overrides: Mapping[str, Any] | None = None,
 ) -> OptimizerRecipe:
     """Resolve a paper recipe or a supported AdamW-backbone comparison.
 
     ``head_overrides`` replaces LM-head values for hyperparameter sweeps. Any
-    override turns the identifier family into ``sweep``, so paper identifiers
+    override, like ``attention_qk="compositional"`` (which moves query/key
+    pairs from Muon to Compositional Muon), turns the identifier family into
+    ``sweep``, so paper identifiers
     always denote the exact paper configuration; the resolved values are
     recorded in the run configuration.
     """
@@ -166,6 +175,14 @@ def resolve_optimizer_recipe(
         )
     if backbone == "adamw" and head != "adamw":
         raise ValueError("final AdamW-backbone recipes require the AdamW LM head")
+    if attention_qk not in ("muon", "compositional"):
+        raise ValueError(
+            f"attention QK optimizer must be 'muon' or 'compositional', got {attention_qk!r}"
+        )
+    if attention_qk_overrides and attention_qk != "compositional":
+        raise ValueError("attention_qk_overrides require attention_qk='compositional'")
+    if attention_qk == "compositional" and backbone != "muon":
+        raise ValueError("Compositional Muon on query/key requires the Muon backbone")
 
     config = (
         _adamw_recipe(model_name)
@@ -180,6 +197,23 @@ def resolve_optimizer_recipe(
             else config["auxiliary_adamw"]["groups"]["lm_head"]
         )
         _apply_head_overrides(head_config, head_overrides)
+        family = "sweep"
+    if attention_qk == "compositional":
+        values = {**COMPOSITIONAL_QK_DEFAULTS, **(attention_qk_overrides or {})}
+        unknown = sorted(set(values) - set(COMPOSITIONAL_QK_DEFAULTS))
+        if unknown:
+            raise ValueError(f"compositional attention_qk cannot override {unknown}")
+        backbone_config = config["backbone"]
+        config["attention_qk"] = {
+            "algorithm": "compositional",
+            **{
+                key: backbone_config[key]
+                for key in ("lr", "momentum", "nesterov", "weight_decay", "ns_steps", "eps")
+            },
+            "mp": float(values["mp"]),
+            "damping": float(values["damping"]),
+            "whitening": values["whitening"],
+        }
         family = "sweep"
     return OptimizerRecipe(
         identifier=f"{family}:{model_name}:{backbone}:{head}", config=config

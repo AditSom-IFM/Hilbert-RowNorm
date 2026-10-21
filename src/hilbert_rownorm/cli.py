@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--lm-head-betas", type=float, nargs=2, metavar=("BETA1", "BETA2"))
     sweep.add_argument("--lm-head-beta", type=float, help="RowNorm EMA coefficient")
     sweep.add_argument("--lm-head-weight-decay", type=float)
+    attention = parser.add_argument_group("attention")
+    attention.add_argument(
+        "--no-qk-norm", action="store_true", help="remove the per-head query/key RMSNorm"
+    )
+    attention.add_argument(
+        "--attention-qk-optimizer", choices=("muon", "compositional"), default="muon"
+    )
+    attention.add_argument("--cm-mp", type=float, help="Compositional Muon LR multiplier")
+    attention.add_argument("--cm-whitening", choices=("isotropic", "full"))
     parser.add_argument("--exact-head-diameter-every-log", action="store_true")
     parser.add_argument("--exact-head-diameter-block-rows", type=int, default=4_096)
     parser.add_argument("--hilbert-step-probe-tokens", type=int, default=0)
