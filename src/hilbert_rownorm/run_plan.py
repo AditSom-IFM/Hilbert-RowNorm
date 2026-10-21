@@ -51,6 +51,22 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
         raise ValueError("exact_head_diameter_every_log requires --log-every > 0")
     if hilbert_probe_tokens < 0:
         raise ValueError("hilbert_step_probe_tokens must be non-negative")
+    head = getattr(args, "lm_head_optimizer", None)
+    if getattr(args, "lm_head_betas", None) is not None and head != "adamw":
+        raise ValueError("--lm-head-betas applies only to the AdamW LM head")
+    if getattr(args, "lm_head_beta", None) is not None and head != "rownorm":
+        raise ValueError("--lm-head-beta applies only to the RowNorm LM head")
+    compositional = getattr(args, "attention_qk_optimizer", "muon") == "compositional"
+    cm_options = ("cm_mp", "cm_whitening")
+    if not compositional and any(getattr(args, name, None) is not None for name in cm_options):
+        raise ValueError("--cm-* options require --attention-qk-optimizer compositional")
+    if compositional:
+        if getattr(args, "optimizer", None) != "muon":
+            raise ValueError("--attention-qk-optimizer compositional requires --optimizer muon")
+        # QK-norm makes scores invariant to the per-head query/key weight scale
+        # that Compositional Muon's partner whitening uses to size the step.
+        if not getattr(args, "no_qk_norm", False):
+            raise ValueError("--attention-qk-optimizer compositional requires --no-qk-norm")
 
 
 def build_run_plan(

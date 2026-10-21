@@ -9,6 +9,7 @@ from typing import Any
 from torch import nn
 from torch.optim import AdamW, Optimizer
 
+from .compositional_qk import CompositionalQK
 from .head_optimizers import HeadAdamW, RowNorm
 from .muon import Muon
 
@@ -37,6 +38,56 @@ def _split_parameters(model: nn.Module) -> tuple[tuple[nn.Parameter, ...], ...]:
     if set(role_ids) != set(trainable_ids):
         raise ValueError("optimizer parameter roles must cover every trainable parameter")
     return groups
+
+
+def _take_qk_pairs(
+    model: nn.Module, hidden: Sequence[nn.Parameter]
+) -> tuple[list[tuple[nn.Parameter, nn.Parameter]], tuple[nn.Parameter, ...]]:
+    """Move every query/key pair out of the hidden (Muon) role."""
+
+    try:
+        pairs = [tuple(pair) for pair in model.qk_pairs()]  # type: ignore[attr-defined]
+    except AttributeError as error:
+        raise TypeError("compositional attention_qk requires model.qk_pairs()") from error
+    qk_ids = {id(parameter) for pair in pairs for parameter in pair}
+    hidden_ids = {id(parameter) for parameter in hidden}
+    if not pairs or len(qk_ids) != 2 * len(pairs) or not qk_ids <= hidden_ids:
+        raise ValueError("query/key pairs must be distinct hidden matrices")
+    remaining = tuple(parameter for parameter in hidden if id(parameter) not in qk_ids)
+    return pairs, remaining  # type: ignore[return-value]
+
+
+def _attention_qk_optimizer(
+    model: nn.Module,
+    pairs: Sequence[tuple[nn.Parameter, nn.Parameter]],
+    config: Any,
+) -> Optimizer:
+    label = "Muon attention_qk"
+    if not isinstance(config, Mapping):
+        raise ValueError(f"{label} must be a mapping")
+    keys = {"algorithm", "lr", "momentum", "nesterov", "weight_decay"}
+    keys |= {"ns_steps", "eps", "mp", "damping", "whitening"}
+    _require_keys(config, keys, label)
+    if config["algorithm"] != "compositional":
+        raise ValueError(f"{label}.algorithm must be 'compositional'")
+    if not isinstance(config["nesterov"], bool):
+        raise ValueError(f"{label}.nesterov must be a bool")
+    momentum = _number(config, "momentum", label)
+    if momentum >= 1:
+        raise ValueError(f"{label}.momentum must be in [0, 1)")
+    return CompositionalQK(
+        pairs,
+        head_dim=model.config.head_dim,  # type: ignore[attr-defined]
+        lr=_number(config, "lr", label, positive=True),
+        momentum=momentum,
+        nesterov=config["nesterov"],
+        weight_decay=_number(config, "weight_decay", label),
+        mp=_number(config, "mp", label, positive=True),
+        damping=_number(config, "damping", label),
+        whitening=config["whitening"],
+        ns_steps=config["ns_steps"],
+        eps=_number(config, "eps", label, positive=True),
+    )
 
 
 def _require_keys(config: Mapping[str, Any], expected: set[str], label: str) -> None:
@@ -90,7 +141,11 @@ def _head_optimizer(
         raise ValueError(f"{label} config must be a mapping")
     algorithm = config.get("algorithm")
     if algorithm == "adamw":
-        _require_keys(config, {"algorithm", "lr", "eps", "weight_decay"}, label)
+        # The head inherits the shared AdamW betas unless it sets its own.
+        required = {"algorithm", "lr", "eps", "weight_decay"}
+        _require_keys(config, required | ({"betas"} if "betas" in config else set()), label)
+        if "betas" in config:
+            betas = _betas(config["betas"], f"{label}.betas")
         return HeadAdamW(
             params,
             lr=_number(config, "lr", label, positive=True),
@@ -148,7 +203,18 @@ def build_optimizers(
             _head_optimizer(head, groups_config["lm_head"], betas, "lm_head"),
         ]
     else:
-        _require_keys(config, {"backbone", "auxiliary_adamw"}, "Muon config")
+        muon_keys = {"backbone", "auxiliary_adamw"}
+        _require_keys(
+            config,
+            muon_keys | ({"attention_qk"} if "attention_qk" in config else set()),
+            "Muon config",
+        )
+        attention_optimizers: list[Optimizer] = []
+        if "attention_qk" in config:
+            pairs, hidden = _take_qk_pairs(model, hidden)
+            attention_optimizers.append(
+                _attention_qk_optimizer(model, pairs, config["attention_qk"])
+            )
         backbone = config["backbone"]
         auxiliary = config["auxiliary_adamw"]
         if not isinstance(backbone, Mapping) or not isinstance(auxiliary, Mapping):
@@ -189,6 +255,7 @@ def build_optimizers(
         groups = [_adamw_group("input_embedding", embedding, groups_config["input_embedding"])]
         optimizers = [
             muon,
+            *attention_optimizers,
             AdamW(groups, betas=betas),
             _head_optimizer(
                 head,

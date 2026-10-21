@@ -891,3 +891,17 @@ def test_optimizer_list_state_round_trip_preserves_positional_contract(
                     torch.testing.assert_close(restored_values[key], value)
                 else:
                     assert restored_values[key] == value
+
+
+def test_newton_schulz_batches_match_independent_matrices() -> None:
+    torch.manual_seed(11)
+    batch = torch.randn(3, 4, 9)
+    stacked = orthogonalize_newton_schulz(batch, steps=5, eps=1e-7)
+    for index in range(batch.shape[0]):
+        single = orthogonalize_newton_schulz(batch[index], steps=5, eps=1e-7)
+        torch.testing.assert_close(stacked[index], single)
+
+    tall = torch.randn(2, 9, 4)
+    assert orthogonalize_newton_schulz(tall, steps=5, eps=1e-7).shape == (2, 9, 4)
+    with pytest.raises(ValueError, match="expects matrices"):
+        orthogonalize_newton_schulz(torch.ones(3), steps=1, eps=1e-7)
