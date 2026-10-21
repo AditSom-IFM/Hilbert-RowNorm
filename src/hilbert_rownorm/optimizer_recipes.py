@@ -1,7 +1,8 @@
-"""Paper recipes and the supported AdamW-backbone comparisons."""
+"""Paper recipes, the supported AdamW-backbone comparisons, and sweep variants."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,25 @@ _MUON_HEAD_LRS = {
     },
     "640m": {"adamw": 0.002, "rownorm": 0.0016},
 }
+
+# LM-head keys a sweep may override, per head algorithm.
+HEAD_OVERRIDE_KEYS = {
+    "adamw": ("lr", "betas", "weight_decay"),
+    "rownorm": ("lr", "beta", "weight_decay"),
+}
+
+
+def _apply_head_overrides(
+    head: dict[str, Any], overrides: Mapping[str, Any]
+) -> None:
+    allowed = HEAD_OVERRIDE_KEYS[head["algorithm"]]
+    unknown = sorted(set(overrides) - set(allowed))
+    if unknown:
+        raise ValueError(
+            f"{head['algorithm']} LM head cannot override {unknown}; choose from {allowed}"
+        )
+    for key, value in overrides.items():
+        head[key] = [float(v) for v in value] if key == "betas" else float(value)
 
 
 def _canonical_model_name(name: str) -> str:
@@ -121,8 +141,16 @@ def resolve_optimizer_recipe(
     model: str,
     backbone_optimizer: str,
     lm_head_optimizer: str,
+    *,
+    head_overrides: Mapping[str, Any] | None = None,
 ) -> OptimizerRecipe:
-    """Resolve a paper recipe or a supported AdamW-backbone comparison."""
+    """Resolve a paper recipe or a supported AdamW-backbone comparison.
+
+    ``head_overrides`` replaces LM-head values for hyperparameter sweeps. Any
+    override turns the identifier family into ``sweep``, so paper identifiers
+    always denote the exact paper configuration; the resolved values are
+    recorded in the run configuration.
+    """
 
     model_name = _canonical_model_name(model)
     backbone = backbone_optimizer.lower()
@@ -145,6 +173,14 @@ def resolve_optimizer_recipe(
         else _muon_recipe(model_name, head)
     )
     family = "paper" if backbone == "muon" else "adamw-backbone"
+    if head_overrides:
+        head_config = (
+            config["groups"]["lm_head"]
+            if backbone == "adamw"
+            else config["auxiliary_adamw"]["groups"]["lm_head"]
+        )
+        _apply_head_overrides(head_config, head_overrides)
+        family = "sweep"
     return OptimizerRecipe(
         identifier=f"{family}:{model_name}:{backbone}:{head}", config=config
     )

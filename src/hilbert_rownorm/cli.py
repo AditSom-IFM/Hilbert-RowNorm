@@ -20,6 +20,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lm-head-optimizer", choices=("adamw", "rownorm"), required=True
     )
+    sweep = parser.add_argument_group(
+        "LM-head sweep overrides",
+        "Replace single LM-head values from the selected recipe; any override "
+        "marks the run's recipe identifier as a sweep.",
+    )
+    sweep.add_argument("--lm-head-lr", type=float)
+    sweep.add_argument("--lm-head-betas", type=float, nargs=2, metavar=("BETA1", "BETA2"))
+    sweep.add_argument("--lm-head-beta", type=float, help="RowNorm EMA coefficient")
+    sweep.add_argument("--lm-head-weight-decay", type=float)
     parser.add_argument("--exact-head-diameter-every-log", action="store_true")
     parser.add_argument("--exact-head-diameter-block-rows", type=int, default=4_096)
     parser.add_argument("--hilbert-step-probe-tokens", type=int, default=0)

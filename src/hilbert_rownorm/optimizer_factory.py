@@ -90,7 +90,11 @@ def _head_optimizer(
         raise ValueError(f"{label} config must be a mapping")
     algorithm = config.get("algorithm")
     if algorithm == "adamw":
-        _require_keys(config, {"algorithm", "lr", "eps", "weight_decay"}, label)
+        # The head inherits the shared AdamW betas unless it sets its own.
+        required = {"algorithm", "lr", "eps", "weight_decay"}
+        _require_keys(config, required | ({"betas"} if "betas" in config else set()), label)
+        if "betas" in config:
+            betas = _betas(config["betas"], f"{label}.betas")
         return HeadAdamW(
             params,
             lr=_number(config, "lr", label, positive=True),

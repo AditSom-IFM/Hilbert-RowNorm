@@ -51,6 +51,11 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
         raise ValueError("exact_head_diameter_every_log requires --log-every > 0")
     if hilbert_probe_tokens < 0:
         raise ValueError("hilbert_step_probe_tokens must be non-negative")
+    head = getattr(args, "lm_head_optimizer", None)
+    if getattr(args, "lm_head_betas", None) is not None and head != "adamw":
+        raise ValueError("--lm-head-betas applies only to the AdamW LM head")
+    if getattr(args, "lm_head_beta", None) is not None and head != "rownorm":
+        raise ValueError("--lm-head-beta applies only to the RowNorm LM head")
 
 
 def build_run_plan(
