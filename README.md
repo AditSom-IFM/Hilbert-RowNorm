@@ -127,6 +127,28 @@ The paper's Muon backbone supports both head optimizers at all three scales.
 Unsupported combinations fail explicitly; no untested 640M AdamW backbone
 recipe is inferred.
 
+## Sweeps and Compositional Muon (beyond the paper)
+
+Two kinds of overrides support experiments beyond the paper matrix. Either one
+changes the recipe identifier family to `sweep`, so paper identifiers always
+denote the exact paper configuration; the resolved values are recorded in
+`config.json` and W&B.
+
+- LM-head sweeps: `--lm-head-lr`, `--lm-head-weight-decay`, `--lm-head-betas`
+  (AdamW head; the input embedding keeps $(0.9, 0.999)$), and `--lm-head-beta`
+  (RowNorm EMA). Backbone and input embedding keep their paper settings.
+- `--attention-qk-optimizer compositional` moves each layer's query and key
+  matrices from Muon to Compositional Muon's half-split rule (Keigwin et al.,
+  2026), implemented in
+  [`compositional_qk.py`](src/hilbert_rownorm/compositional_qk.py) on this
+  repository's Newton–Schulz transform. It requires `--no-qk-norm` (per-head
+  QK RMSNorm removes the weight scale that partner whitening measures), and
+  comparison Muon runs should pass `--no-qk-norm` too. `--cm-whitening full`
+  bounds each half of the first-order query–key product change exactly but
+  ignores RoPE; the default `isotropic` commutes with RoPE and meets the
+  bound approximately. `--cm-mp` scales the step (default 2, cancelling the
+  half-split budget).
+
 ## Local diagnostics and numerical conventions
 
 Every run writes `config.json`, `metrics.jsonl`, and `summary.json` under its
@@ -209,6 +231,8 @@ is descriptive run-to-run variation, not a confidence interval.
   [`muon.py`](src/hilbert_rownorm/muon.py), and
   [`head_optimizers.py`](src/hilbert_rownorm/head_optimizers.py) implement
   parameter routing and optimizer equations.
+- [`compositional_qk.py`](src/hilbert_rownorm/compositional_qk.py) applies
+  Compositional Muon to query/key pairs.
 - [`head_geometry.py`](src/hilbert_rownorm/head_geometry.py) computes the
   exact LM-head increment diameter.
 - [`hilbert_diagnostics.py`](src/hilbert_rownorm/hilbert_diagnostics.py)

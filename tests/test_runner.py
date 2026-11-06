@@ -96,8 +96,8 @@ def test_prepare_run_preserves_deterministic_construction_order(
     monkeypatch.setattr(
         runner,
         "resolve_optimizer_recipe",
-        lambda model, backbone, head: (
-            events.append(("optimizer_recipe", model, backbone, head))
+        lambda model, backbone, head, **kwargs: (
+            events.append(("optimizer_recipe", model, backbone, head, kwargs))
             or optimizer_recipe
         ),
     )
@@ -183,7 +183,13 @@ def test_prepare_run_preserves_deterministic_construction_order(
             "gradient_checkpointing": True,
         },
     )
-    assert events[5] == ("optimizer_recipe", "tiny", "adamw", "adamw")
+    assert events[5] == (
+        "optimizer_recipe",
+        "tiny",
+        "adamw",
+        "adamw",
+        {"head_overrides": {}, "attention_qk": "muon", "attention_qk_overrides": {}},
+    )
     assert events[6] == ("optimizers", base_model, "adamw", optimizer_config)
     assert events[7] == (
         "geometry",

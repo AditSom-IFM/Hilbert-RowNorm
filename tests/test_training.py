@@ -430,7 +430,7 @@ def test_max_steps_truncates_zero_based_updates_without_shortening_schedule(
     monkeypatch.setattr(
         runner_module,
         "resolve_optimizer_recipe",
-        lambda model, backbone, head: SimpleNamespace(identifier="test", config={}),
+        lambda model, backbone, head, **kwargs: SimpleNamespace(identifier="test", config={}),
     )
     monkeypatch.setattr(runner_module, "build_optimizers", lambda model, name, recipe: [])
     monkeypatch.setattr(runner_module, "FineWebBatchLoader", FakeLoader)

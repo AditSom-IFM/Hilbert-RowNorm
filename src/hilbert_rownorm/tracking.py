@@ -71,6 +71,9 @@ def optimizer_configuration(optimizers: list[Optimizer]) -> list[dict[str, Any]]
                 "momentum",
                 "nesterov",
                 "ns_steps",
+                "mp",
+                "damping",
+                "whitening",
             ):
                 if key in group:
                     value = group[key]

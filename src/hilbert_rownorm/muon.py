@@ -14,13 +14,17 @@ NS_COEFFICIENTS = (3.4445, -4.7750, 2.0315)
 
 
 def orthogonalize_newton_schulz(matrix: Tensor, steps: int, eps: float) -> Tensor:
-    """Apply the quintic Newton--Schulz transform used by the paper's Muon."""
+    """Apply the quintic Newton--Schulz transform used by the paper's Muon.
 
-    if matrix.ndim != 2:
+    Leading dimensions are treated as a batch of independent matrices, each
+    normalized on its own; a plain matrix is numerically unchanged.
+    """
+
+    if matrix.ndim < 2:
         raise ValueError(f"Muon expects matrices, got shape {tuple(matrix.shape)}")
-    transposed = matrix.shape[0] > matrix.shape[1]
+    transposed = matrix.shape[-2] > matrix.shape[-1]
     value = matrix.mT if transposed else matrix
-    value = value / (torch.linalg.vector_norm(value) + eps)
+    value = value / (torch.linalg.vector_norm(value, dim=(-2, -1), keepdim=True) + eps)
     a, b, c = NS_COEFFICIENTS
     for _ in range(steps):
         gram = value @ value.mT

@@ -26,6 +26,7 @@ class ModelConfig:
     rope_theta: float = 10_000.0
     rms_norm_eps: float = 1e-6
     initializer_std: float = 0.02
+    qk_norm: bool = True
 
     def __post_init__(self) -> None:
         sizes = (
@@ -44,6 +45,8 @@ class ModelConfig:
             raise ValueError("head_dim must be even for RoPE")
         if not math.isfinite(self.initializer_std) or self.initializer_std <= 0:
             raise ValueError("initializer_std must be finite and positive")
+        if not isinstance(self.qk_norm, bool):
+            raise TypeError("qk_norm must be a bool")
 
     @property
     def n_heads(self) -> int:

@@ -137,3 +137,17 @@ def test_fp32_parameters_with_bf16_compute() -> None:
         assert model.forward_features(tokens).dtype == torch.bfloat16
         assert model(tokens).dtype == torch.bfloat16
     assert {parameter.dtype for parameter in model.parameters()} == {torch.float32}
+
+
+def test_qk_norm_switch_changes_attention_scores_only() -> None:
+    torch.manual_seed(3)
+    normed = TransformerLM(tiny_config(qk_norm=True))
+    plain = TransformerLM(tiny_config(qk_norm=False))
+    plain.load_state_dict(normed.state_dict())
+    tokens = torch.randint(101, (2, 7))
+
+    assert tuple(plain.state_dict()) == tuple(normed.state_dict())
+    assert not torch.allclose(plain(tokens), normed(tokens))
+    pairs = list(plain.qk_pairs())
+    assert pairs == [(block.attn.q.weight, block.attn.k.weight) for block in plain.blocks]
+    assert ModelConfig(dim=32, head_dim=8).qk_norm is True

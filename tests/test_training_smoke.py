@@ -13,9 +13,21 @@ from hilbert_rownorm.cli import build_parser
 from hilbert_rownorm.config import ModelConfig
 from hilbert_rownorm.data import FINEWEB_MAGIC, FINEWEB_VERSION, HEADER_INTS
 
+COMPOSITIONAL_SWEEP = [
+    "--no-qk-norm",
+    "--attention-qk-optimizer",
+    "compositional",
+    "--lm-head-beta",
+    "0.9",
+]
 
-@pytest.mark.parametrize("head", ["adamw", "rownorm"])
-def test_real_cpu_run_writes_three_curves_without_wandb(tmp_path, monkeypatch, head):
+
+@pytest.mark.parametrize(
+    ("head", "extra"),
+    [("adamw", []), ("rownorm", []), ("rownorm", COMPOSITIONAL_SWEEP)],
+    ids=["adamw", "rownorm", "rownorm-compositional-sweep"],
+)
+def test_real_cpu_run_writes_three_curves_without_wandb(tmp_path, monkeypatch, head, extra):
     # Only shrink the architecture; retain the actual selected optimizer recipe.
     config = ModelConfig(dim=16, n_layers=1, head_dim=8, vocab_size=31, max_seq_len=8)
     monkeypatch.setattr(runner, "model_preset", lambda name: config)
@@ -74,6 +86,7 @@ def test_real_cpu_run_writes_three_curves_without_wandb(tmp_path, monkeypatch, h
             "8",
             "--hilbert-step-probe-tokens",
             "16",
+            *extra,
         ]
     )
     threads = torch.get_num_threads()
@@ -105,3 +118,12 @@ def test_real_cpu_run_writes_three_curves_without_wandb(tmp_path, monkeypatch, h
     assert metadata["diameter_algorithm"] == "centered_cdist_v2"
     assert metadata["precision_details"]["autocast"] is None
     assert not (output / "wandb").exists()
+    roles = [group["role"] for group in metadata["optimizer_groups"]]
+    if extra:
+        assert metadata["model_config"]["qk_norm"] is False
+        assert roles == ["backbone", "attention_qk", "input_embedding", "lm_head"]
+        assert metadata["optimizer_recipe_id"] == "sweep:190m:muon:rownorm"
+    else:
+        assert metadata["model_config"]["qk_norm"] is True
+        assert roles == ["backbone", "input_embedding", "lm_head"]
+        assert metadata["optimizer_recipe_id"] == f"paper:190m:muon:{head}"

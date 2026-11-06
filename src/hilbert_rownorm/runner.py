@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +75,27 @@ def create_output_directory(
         raise RuntimeError(failure[0]) from creation_error
 
 
+def head_overrides(args: Namespace) -> dict[str, object]:
+    """Collect LM-head sweep values given on the command line."""
+
+    names = {
+        "lr": "lm_head_lr",
+        "betas": "lm_head_betas",
+        "beta": "lm_head_beta",
+        "weight_decay": "lm_head_weight_decay",
+    }
+    values = {key: getattr(args, name, None) for key, name in names.items()}
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def attention_qk_overrides(args: Namespace) -> dict[str, object]:
+    """Collect Compositional Muon values given on the command line."""
+
+    names = {"mp": "cm_mp", "whitening": "cm_whitening"}
+    values = {key: getattr(args, name, None) for key, name in names.items()}
+    return {key: value for key, value in values.items() if value is not None}
+
+
 def prepare_run(
     args: Namespace,
     rank: int,
@@ -85,6 +106,8 @@ def prepare_run(
 
     validate_arguments(args, world_size)
     config = model_preset(args.model)
+    if getattr(args, "no_qk_norm", False):
+        config = replace(config, qk_norm=False)
     plan = build_run_plan(args, config, world_size)
     create_output_directory(args.output, rank, world_size, device)
 
@@ -96,7 +119,12 @@ def prepare_run(
         gradient_checkpointing=args.gradient_checkpointing,
     )
     optimizer_recipe = resolve_optimizer_recipe(
-        args.model, args.optimizer, args.lm_head_optimizer
+        args.model,
+        args.optimizer,
+        args.lm_head_optimizer,
+        head_overrides=head_overrides(args),
+        attention_qk=getattr(args, "attention_qk_optimizer", "muon"),
+        attention_qk_overrides=attention_qk_overrides(args),
     )
     optimizers = build_optimizers(model, args.optimizer, optimizer_recipe.config)
     head_geometry = HeadGeometry(

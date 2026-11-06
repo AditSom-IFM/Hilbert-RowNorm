@@ -78,6 +78,7 @@ def test_save_checkpoint_preserves_payload_and_barrier_order(
         "rope_theta": 10_000.0,
         "rms_norm_eps": 1e-6,
         "initializer_std": 0.02,
+        "qk_norm": True,
     }
 
 
