@@ -77,6 +77,14 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
     _check_override(args, "lm_head_beta", "--lm-head-beta", below_one=True)
     _check_override(args, "lm_head_weight_decay", "--lm-head-weight-decay")
     _check_override(args, "cm_mp", "--cm-mp", positive=True)
+    _check_override(args, "qk_lr", "--qk-lr", positive=True)
+    _check_override(args, "qk_momentum", "--qk-momentum", below_one=True)
+    _check_override(args, "qk_weight_decay", "--qk-weight-decay")
+    qk_options = ("qk_lr", "qk_momentum", "qk_weight_decay")
+    if any(getattr(args, name, None) is not None for name in qk_options) and (
+        getattr(args, "optimizer", None) != "muon"
+    ):
+        raise ValueError("--qk-* options require --optimizer muon")
     head = getattr(args, "lm_head_optimizer", None)
     if getattr(args, "lm_head_betas", None) is not None and head != "adamw":
         raise ValueError("--lm-head-betas applies only to the AdamW LM head")

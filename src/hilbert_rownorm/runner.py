@@ -89,9 +89,15 @@ def head_overrides(args: Namespace) -> dict[str, object]:
 
 
 def attention_qk_overrides(args: Namespace) -> dict[str, object]:
-    """Collect Compositional Muon values given on the command line."""
+    """Collect query/key optimizer values given on the command line."""
 
-    names = {"mp": "cm_mp", "whitening": "cm_whitening"}
+    names = {
+        "lr": "qk_lr",
+        "momentum": "qk_momentum",
+        "weight_decay": "qk_weight_decay",
+        "mp": "cm_mp",
+        "whitening": "cm_whitening",
+    }
     values = {key: getattr(args, name, None) for key, name in names.items()}
     return {key: value for key, value in values.items() if value is not None}
 

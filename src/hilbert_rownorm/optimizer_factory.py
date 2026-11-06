@@ -48,7 +48,7 @@ def _take_qk_pairs(
     try:
         pairs = [tuple(pair) for pair in model.qk_pairs()]  # type: ignore[attr-defined]
     except AttributeError as error:
-        raise TypeError("compositional attention_qk requires model.qk_pairs()") from error
+        raise TypeError("a separate attention_qk optimizer requires model.qk_pairs()") from error
     qk_ids = {id(parameter) for pair in pairs for parameter in pair}
     hidden_ids = {id(parameter) for parameter in hidden}
     if not pairs or len(qk_ids) != 2 * len(pairs) or not qk_ids <= hidden_ids:
@@ -65,16 +65,31 @@ def _attention_qk_optimizer(
     label = "Muon attention_qk"
     if not isinstance(config, Mapping):
         raise ValueError(f"{label} must be a mapping")
-    keys = {"algorithm", "lr", "momentum", "nesterov", "weight_decay"}
-    keys |= {"ns_steps", "eps", "mp", "damping", "whitening"}
+    keys = {"algorithm", "lr", "momentum", "nesterov", "weight_decay", "ns_steps", "eps"}
+    algorithm = config.get("algorithm")
+    if algorithm == "compositional":
+        keys |= {"mp", "damping", "whitening"}
+    elif algorithm != "muon":
+        raise ValueError(f"{label}.algorithm must be 'muon' or 'compositional'")
     _require_keys(config, keys, label)
-    if config["algorithm"] != "compositional":
-        raise ValueError(f"{label}.algorithm must be 'compositional'")
     if not isinstance(config["nesterov"], bool):
         raise ValueError(f"{label}.nesterov must be a bool")
+    if not isinstance(config["ns_steps"], int) or config["ns_steps"] < 0:
+        raise ValueError(f"{label}.ns_steps must be a non-negative integer")
     momentum = _number(config, "momentum", label)
     if momentum >= 1:
         raise ValueError(f"{label}.momentum must be in [0, 1)")
+    if algorithm == "muon":
+        return Muon(
+            [weight for pair in pairs for weight in pair],
+            lr=_number(config, "lr", label, positive=True),
+            momentum=momentum,
+            nesterov=config["nesterov"],
+            weight_decay=_number(config, "weight_decay", label),
+            ns_steps=config["ns_steps"],
+            eps=_number(config, "eps", label, positive=True),
+            role="attention_qk",
+        )
     return CompositionalQK(
         pairs,
         head_dim=model.config.head_dim,  # type: ignore[attr-defined]

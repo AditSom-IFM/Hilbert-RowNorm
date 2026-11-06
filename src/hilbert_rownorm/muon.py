@@ -45,6 +45,7 @@ class Muon(Optimizer):
         weight_decay: float,
         ns_steps: int,
         eps: float,
+        role: str = "backbone",
     ) -> None:
         if lr < 0 or not 0 <= momentum < 1 or weight_decay < 0 or ns_steps < 0 or eps < 0:
             raise ValueError("invalid Muon hyperparameters")
@@ -53,7 +54,7 @@ class Muon(Optimizer):
         defaults = dict(
             lr=float(lr),
             base_lr=float(lr),
-            role="backbone",
+            role=role,
             momentum=float(momentum),
             nesterov=nesterov,
             weight_decay=float(weight_decay),

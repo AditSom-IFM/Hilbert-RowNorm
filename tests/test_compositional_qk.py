@@ -218,7 +218,7 @@ def test_compositional_recipe_inherits_the_muon_backbone_settings() -> None:
     ("kwargs", "message"),
     [
         ({"attention_qk": "lion"}, "attention QK optimizer"),
-        ({"attention_qk_overrides": {"mp": 1.0}}, "require attention_qk='compositional'"),
+        ({"attention_qk_overrides": {"mp": 1.0}}, r"muon attention_qk cannot override \['mp'\]"),
         (
             {"attention_qk": "compositional", "attention_qk_overrides": {"ns": 5}},
             "cannot override",
