@@ -85,3 +85,32 @@ def test_head_betas_override_reaches_only_the_head_adamw() -> None:
 def test_argument_validation_matches_beta_flags_to_the_head(changes, message) -> None:
     with pytest.raises(ValueError, match=message):
         validate_arguments(run_args(**changes), world_size=1)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"lm_head_lr": 0.0}, "--lm-head-lr must be finite and positive"),
+        ({"lm_head_lr": float("nan")}, "--lm-head-lr must be finite and positive"),
+        ({"lm_head_beta": 1.0}, r"--lm-head-beta must be in \[0, 1\)"),
+        (
+            {"lm_head_optimizer": "adamw", "lm_head_betas": [0.9, 1.0]},
+            r"--lm-head-betas must be in \[0, 1\)",
+        ),
+        ({"lm_head_weight_decay": -0.1}, "--lm-head-weight-decay must be finite and non-negative"),
+        ({"cm_mp": 0.0}, "--cm-mp must be finite and positive"),
+    ],
+)
+def test_override_values_are_checked_before_the_run_starts(changes, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_arguments(run_args(**changes), world_size=1)
+
+
+def test_edge_override_values_are_accepted() -> None:
+    validate_arguments(
+        run_args(lm_head_lr=5e-3, lm_head_beta=0.0, lm_head_weight_decay=0.0),
+        world_size=1,
+    )
+    validate_arguments(
+        run_args(lm_head_optimizer="adamw", lm_head_betas=[0.999, 0.9999]), world_size=1
+    )

@@ -25,6 +25,27 @@ class RunPlan:
         return self.schedule_steps * self.tokens_per_step
 
 
+def _check_override(
+    args: argparse.Namespace,
+    name: str,
+    flag: str,
+    *,
+    positive: bool = False,
+    below_one: bool = False,
+) -> None:
+    """Range-check an optional sweep value before any run resource is created."""
+
+    value = getattr(args, name, None)
+    if value is None:
+        return
+    for item in value if isinstance(value, (list, tuple)) else (value,):
+        if below_one and not (math.isfinite(item) and 0 <= item < 1):
+            raise ValueError(f"{flag} must be in [0, 1)")
+        if not math.isfinite(item) or item < 0 or (positive and item == 0):
+            qualifier = "positive" if positive else "non-negative"
+            raise ValueError(f"{flag} must be finite and {qualifier}")
+
+
 def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
     """Validate run arguments whose meaning does not depend on the model preset."""
 
@@ -51,6 +72,11 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
         raise ValueError("exact_head_diameter_every_log requires --log-every > 0")
     if hilbert_probe_tokens < 0:
         raise ValueError("hilbert_step_probe_tokens must be non-negative")
+    _check_override(args, "lm_head_lr", "--lm-head-lr", positive=True)
+    _check_override(args, "lm_head_betas", "--lm-head-betas", below_one=True)
+    _check_override(args, "lm_head_beta", "--lm-head-beta", below_one=True)
+    _check_override(args, "lm_head_weight_decay", "--lm-head-weight-decay")
+    _check_override(args, "cm_mp", "--cm-mp", positive=True)
     head = getattr(args, "lm_head_optimizer", None)
     if getattr(args, "lm_head_betas", None) is not None and head != "adamw":
         raise ValueError("--lm-head-betas applies only to the AdamW LM head")

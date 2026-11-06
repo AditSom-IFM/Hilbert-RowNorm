@@ -90,7 +90,7 @@ def build_run_config(
     """Build the exact tracking configuration used to describe a run."""
 
     return {
-        **{name: getattr(args, name, None) for name in TRACKED_ARGUMENTS},
+        **{name: getattr(args, name) for name in TRACKED_ARGUMENTS},
         "dataset": "FineWeb-100B (GPT-2 tokenizer)",
         "optimizer_recipe_id": optimizer_recipe_id,
         "optimizer_config_values": optimizer_config,
