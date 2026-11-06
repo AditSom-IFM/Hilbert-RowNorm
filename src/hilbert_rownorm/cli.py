@@ -36,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     attention.add_argument(
         "--attention-qk-optimizer", choices=("muon", "compositional"), default="muon"
     )
+    attention.add_argument(
+        "--qk-lr",
+        type=float,
+        help="query/key learning rate; any --qk-* value gives Q/K their own optimizer group",
+    )
+    attention.add_argument("--qk-momentum", type=float, help="query/key momentum")
+    attention.add_argument("--qk-weight-decay", type=float, help="query/key weight decay")
     attention.add_argument("--cm-mp", type=float, help="Compositional Muon LR multiplier")
     attention.add_argument("--cm-whitening", choices=("isotropic", "full"))
     parser.add_argument("--exact-head-diameter-every-log", action="store_true")

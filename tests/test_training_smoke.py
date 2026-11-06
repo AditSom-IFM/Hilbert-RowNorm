@@ -22,10 +22,26 @@ COMPOSITIONAL_SWEEP = [
 ]
 
 
+MUON_QK_SWEEP = [
+    "--no-qk-norm",
+    "--qk-lr",
+    "4e-3",
+    "--qk-momentum",
+    "0.9",
+    "--qk-weight-decay",
+    "0",
+]
+
+
 @pytest.mark.parametrize(
     ("head", "extra"),
-    [("adamw", []), ("rownorm", []), ("rownorm", COMPOSITIONAL_SWEEP)],
-    ids=["adamw", "rownorm", "rownorm-compositional-sweep"],
+    [
+        ("adamw", []),
+        ("rownorm", []),
+        ("rownorm", COMPOSITIONAL_SWEEP),
+        ("rownorm", MUON_QK_SWEEP),
+    ],
+    ids=["adamw", "rownorm", "rownorm-compositional-sweep", "rownorm-muon-qk-sweep"],
 )
 def test_real_cpu_run_writes_three_curves_without_wandb(tmp_path, monkeypatch, head, extra):
     # Only shrink the architecture; retain the actual selected optimizer recipe.

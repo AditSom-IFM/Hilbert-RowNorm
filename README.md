@@ -129,10 +129,10 @@ recipe is inferred.
 
 ## Sweeps and Compositional Muon (beyond the paper)
 
-Two kinds of overrides support experiments beyond the paper matrix. Either one
-changes the recipe identifier family to `sweep`, so paper identifiers always
-denote the exact paper configuration; the resolved values are recorded in
-`config.json` and W&B.
+These overrides support experiments beyond the paper matrix. Any of them, and
+`--no-qk-norm`, changes the recipe identifier family to `sweep`, so paper
+identifiers always denote the exact paper configuration; the resolved values
+are recorded in `config.json` and W&B.
 
 - LM-head sweeps: `--lm-head-lr`, `--lm-head-weight-decay`, `--lm-head-betas`
   (AdamW head; the input embedding keeps $(0.9, 0.999)$), and `--lm-head-beta`
@@ -148,6 +148,12 @@ denote the exact paper configuration; the resolved values are recorded in
   ignores RoPE; the default `isotropic` commutes with RoPE and meets the
   bound approximately. `--cm-mp` scales the step (default 2, cancelling the
   half-split budget).
+- Query/key sweeps: `--qk-lr`, `--qk-momentum`, and `--qk-weight-decay` set the
+  query/key matrices' own values. With the default
+  `--attention-qk-optimizer muon`, any of them puts the query/key pairs in a
+  separate Muon group; with `compositional`, they replace the values
+  Compositional Muon otherwise inherits from the backbone. Every other matrix
+  keeps the backbone recipe.
 
 ## Local diagnostics and numerical conventions
 

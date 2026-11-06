@@ -25,6 +25,9 @@ TRACKED_ARGUMENTS = (
     "lm_head_weight_decay",
     "no_qk_norm",
     "attention_qk_optimizer",
+    "qk_lr",
+    "qk_momentum",
+    "qk_weight_decay",
     "cm_mp",
     "cm_whitening",
     "exact_head_diameter_every_log",
@@ -90,7 +93,7 @@ def build_run_config(
     """Build the exact tracking configuration used to describe a run."""
 
     return {
-        **{name: getattr(args, name, None) for name in TRACKED_ARGUMENTS},
+        **{name: getattr(args, name) for name in TRACKED_ARGUMENTS},
         "dataset": "FineWeb-100B (GPT-2 tokenizer)",
         "optimizer_recipe_id": optimizer_recipe_id,
         "optimizer_config_values": optimizer_config,
