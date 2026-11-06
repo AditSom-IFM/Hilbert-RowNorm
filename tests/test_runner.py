@@ -188,7 +188,12 @@ def test_prepare_run_preserves_deterministic_construction_order(
         "tiny",
         "adamw",
         "adamw",
-        {"head_overrides": {}, "attention_qk": "muon", "attention_qk_overrides": {}},
+        {
+            "head_overrides": {},
+            "attention_qk": "muon",
+            "attention_qk_overrides": {},
+            "qk_norm": True,
+        },
     )
     assert events[6] == ("optimizers", base_model, "adamw", optimizer_config)
     assert events[7] == (

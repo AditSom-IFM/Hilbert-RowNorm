@@ -125,6 +125,7 @@ def prepare_run(
         head_overrides=head_overrides(args),
         attention_qk=getattr(args, "attention_qk_optimizer", "muon"),
         attention_qk_overrides=attention_qk_overrides(args),
+        qk_norm=not getattr(args, "no_qk_norm", False),
     )
     optimizers = build_optimizers(model, args.optimizer, optimizer_recipe.config)
     head_geometry = HeadGeometry(

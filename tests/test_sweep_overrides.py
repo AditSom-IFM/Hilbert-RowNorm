@@ -114,3 +114,10 @@ def test_edge_override_values_are_accepted() -> None:
     validate_arguments(
         run_args(lm_head_optimizer="adamw", lm_head_betas=[0.999, 0.9999]), world_size=1
     )
+
+
+def test_removing_qk_norm_marks_the_recipe_as_a_sweep() -> None:
+    recipe = resolve_optimizer_recipe("190m", "muon", "adamw", qk_norm=False)
+
+    assert recipe.identifier == "sweep:190m:muon:adamw"
+    assert recipe.config == resolve_optimizer_recipe("190m", "muon", "adamw").config

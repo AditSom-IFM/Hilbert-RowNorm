@@ -150,12 +150,14 @@ def resolve_optimizer_recipe(
     head_overrides: Mapping[str, Any] | None = None,
     attention_qk: str = "muon",
     attention_qk_overrides: Mapping[str, Any] | None = None,
+    qk_norm: bool = True,
 ) -> OptimizerRecipe:
     """Resolve a paper recipe or a supported AdamW-backbone comparison.
 
     ``head_overrides`` replaces LM-head values for hyperparameter sweeps. Any
     override, like ``attention_qk="compositional"`` (which moves query/key
-    pairs from Muon to Compositional Muon), turns the identifier family into
+    pairs from Muon to Compositional Muon) or ``qk_norm=False`` (which
+    removes the paper's query/key RMSNorm), turns the identifier family into
     ``sweep``, so paper identifiers
     always denote the exact paper configuration; the resolved values are
     recorded in the run configuration.
@@ -214,6 +216,8 @@ def resolve_optimizer_recipe(
             "damping": float(values["damping"]),
             "whitening": values["whitening"],
         }
+        family = "sweep"
+    if not qk_norm:
         family = "sweep"
     return OptimizerRecipe(
         identifier=f"{family}:{model_name}:{backbone}:{head}", config=config
