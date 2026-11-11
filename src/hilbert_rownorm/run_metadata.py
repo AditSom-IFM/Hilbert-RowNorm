@@ -46,6 +46,8 @@ TRACKED_ARGUMENTS = (
     "eval_every",
     "eval_tokens",
     "save_every",
+    "keep_checkpoints",
+    "resume",
     "gradient_checkpointing",
     "require_cuda",
 )

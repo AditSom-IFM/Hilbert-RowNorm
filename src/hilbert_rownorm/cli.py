@@ -66,7 +66,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-every", type=int, required=True)
     parser.add_argument("--eval-every", type=int, required=True)
     parser.add_argument("--eval-tokens", type=int, required=True)
-    parser.add_argument("--save-every", type=int, required=True)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        required=True,
+        help="write a resumable checkpoint every N updates and at the end; 0 disables",
+    )
+    parser.add_argument(
+        "--keep-checkpoints",
+        type=int,
+        default=2,
+        help="number of newest checkpoints to keep (default: 2)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue from the newest checkpoint in --output if there is one, "
+        "otherwise start there; the output directory may already exist",
+    )
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--require-cuda", action="store_true")
     parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)

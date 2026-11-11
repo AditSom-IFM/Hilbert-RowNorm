@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from argparse import Namespace
 from dataclasses import dataclass, replace
@@ -15,7 +17,14 @@ from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 
-from .checkpointing import save_checkpoint
+from .checkpointing import (
+    ResumePoint,
+    load_checkpoint,
+    restore_checkpoint,
+    resume_fingerprint,
+    save_checkpoint,
+    select_resume_checkpoint,
+)
 from .config import ModelConfig, model_preset
 from .data import FineWebBatchLoader
 from .head_geometry import HeadGeometry
@@ -48,6 +57,94 @@ class PreparedRun:
     actual_val_tokens: int
     device_name: str
     run_config: dict[str, Any]
+    fingerprint: dict[str, Any] | None = None
+    resume: ResumePoint | None = None
+    already_complete: bool = False
+
+    @property
+    def start_update(self) -> int:
+        return 0 if self.resume is None else self.resume.update
+
+
+# Files a run writes into its output directory, moved aside when a resumed
+# run finds no checkpoint and has to start over.
+RUN_RECORDS = (
+    "metrics.jsonl",
+    "config.json",
+    "summary.json",
+    "resumes.jsonl",
+    "wandb",
+)
+
+
+def archive_unfinished_attempt(output: Path) -> Path | None:
+    """Move an earlier attempt's records aside before starting over in ``output``."""
+
+    present = [output / name for name in RUN_RECORDS if (output / name).exists()]
+    present += sorted(output.glob("metrics.discarded-*.jsonl"))
+    present += sorted(output.glob("summary.before-resume-*.json"))
+    if not present:
+        return None
+    index = 1
+    while (output / "abandoned" / f"attempt-{index}").exists():
+        index += 1
+    archive = output / "abandoned" / f"attempt-{index}"
+    archive.mkdir(parents=True)
+    for path in present:
+        os.replace(path, archive / path.name)
+    return archive
+
+
+def _completed_summary(output: Path) -> bool:
+    try:
+        return json.loads((output / "summary.json").read_text()).get("exit_code") == 0
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def prepare_output_directory(
+    output: Path,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    *,
+    resume: bool,
+) -> tuple[Path | None, bool]:
+    """Reserve the run directory and, when resuming, choose the checkpoint.
+
+    Rank zero does the file-system work; every rank receives the chosen
+    checkpoint and whether a finished summary is already present, or the
+    same error.
+    """
+
+    if not resume:
+        create_output_directory(output, rank, world_size, device)
+        return None, False
+    message: list[Any] = [None]
+    if rank == 0:
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+            selected = select_resume_checkpoint(output)
+            if selected is None:
+                archive = archive_unfinished_attempt(output)
+                if archive is not None:
+                    print(
+                        f"no checkpoint in {output}; moved earlier records to {archive}",
+                        flush=True,
+                    )
+            message[0] = {
+                "checkpoint": None if selected is None else str(selected),
+                "complete": selected is not None and _completed_summary(output),
+            }
+        except Exception as error:  # noqa: BLE001 - every rank must see the failure
+            message[0] = {"error": f"cannot resume in {output}: {type(error).__name__}: {error}"}
+    if world_size > 1:
+        dist.broadcast_object_list(message, src=0, device=device)
+    result = message[0]
+    if "error" in result:
+        raise RuntimeError(result["error"])
+    checkpoint = result["checkpoint"]
+    return (None if checkpoint is None else Path(checkpoint)), result["complete"]
 
 
 def create_output_directory(
@@ -115,7 +212,9 @@ def prepare_run(
     if getattr(args, "no_qk_norm", False):
         config = replace(config, qk_norm=False)
     plan = build_run_plan(args, config, world_size)
-    create_output_directory(args.output, rank, world_size, device)
+    checkpoint, complete = prepare_output_directory(
+        args.output, rank, world_size, device, resume=getattr(args, "resume", False)
+    )
 
     torch.manual_seed(args.seed + rank)
     model = TransformerLM(
@@ -186,6 +285,20 @@ def prepare_run(
         device_name,
         compute_dtype=getattr(model, "compute_dtype", None),
     )
+    fingerprint = resume_fingerprint(run_config, train_loader, val_loader)
+    resume = None
+    if checkpoint is not None:
+        resume = _resume(
+            checkpoint,
+            model=model,
+            optimizers=optimizers,
+            train_loader=train_loader,
+            fingerprint=fingerprint,
+            plan=plan,
+            rank=rank,
+            world_size=world_size,
+            device=device,
+        )
     return PreparedRun(
         args=args,
         rank=rank,
@@ -203,7 +316,54 @@ def prepare_run(
         actual_val_tokens=actual_val_tokens,
         device_name=device_name,
         run_config=run_config,
+        fingerprint=fingerprint,
+        resume=resume,
+        already_complete=complete and resume is not None and resume.update == plan.run_steps,
     )
+
+
+def _resume(
+    path: Path,
+    *,
+    model: TransformerLM,
+    optimizers: list[Optimizer],
+    train_loader: FineWebBatchLoader,
+    fingerprint: dict[str, Any],
+    plan: RunPlan,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+) -> ResumePoint:
+    """Restore a checkpoint on every rank; fail on all ranks if any rank fails."""
+
+    error: Exception | None = None
+    point = None
+    try:
+        payload = load_checkpoint(path)
+        point = restore_checkpoint(
+            payload,
+            path=path,
+            model=model,
+            optimizers=optimizers,
+            train_loader=train_loader,
+            fingerprint=fingerprint,
+            run_steps=plan.run_steps,
+            rank=rank,
+            world_size=world_size,
+            device=device,
+        )
+        del payload
+    except Exception as exception:  # noqa: BLE001 - re-raised below on every rank
+        error = exception
+    if world_size > 1 and dist.is_initialized():
+        failed = torch.tensor(int(error is not None), device=device)
+        dist.all_reduce(failed)
+        if failed.item() and error is None:
+            raise RuntimeError(f"another rank failed to restore {path}")
+    if error is not None:
+        raise error
+    assert point is not None
+    return point
 
 
 def start_tracker(run: PreparedRun) -> Tracker:
@@ -226,6 +386,7 @@ def start_tracker(run: PreparedRun) -> Tracker:
         mode=args.wandb_mode,
         directory=args.output,
         config=run.run_config,
+        resume=run.resume,
     )
 
 
@@ -251,7 +412,7 @@ def execute_updates(run: PreparedRun, tracker: Tracker) -> None:
     args = run.args
     plan = run.plan
     autocast_dtype = torch.bfloat16 if run.device.type == "cuda" else None
-    for step in range(plan.run_steps):
+    for step in range(run.start_update, plan.run_steps):
         update = step + 1
         should_log = update == plan.run_steps or (
             args.log_every > 0 and update % args.log_every == 0
@@ -295,25 +456,8 @@ def execute_updates(run: PreparedRun, tracker: Tracker) -> None:
             )
             evaluation_seconds = time.perf_counter() - then
 
-        checkpoint_path = None
-        checkpoint_seconds = None
-        if args.save_every > 0 and (
-            update % args.save_every == 0 or update == plan.run_steps
-        ):
-            checkpoint_path = args.output / (
-                "final.pt" if update == plan.run_steps else "latest.pt"
-            )
-            then = time.perf_counter()
-            save_checkpoint(
-                checkpoint_path,
-                run.model,
-                run.optimizers,
-                update,
-                args,
-                run.rank,
-            )
-            checkpoint_seconds = time.perf_counter() - then
-
+        # Record this update before checkpointing it, so a resumed run's
+        # local metrics never miss an update that the checkpoint covers.
         tracker.report(
             update,
             scale,
@@ -322,9 +466,35 @@ def execute_updates(run: PreparedRun, tracker: Tracker) -> None:
             validation_loss=val_loss,
             validation_hilbert=validation_hilbert,
             validation_seconds=evaluation_seconds,
-            checkpoint_path=checkpoint_path,
-            checkpoint_seconds=checkpoint_seconds,
         )
+
+        if args.save_every > 0 and (
+            update % args.save_every == 0 or update == plan.run_steps
+        ):
+            then = time.perf_counter()
+            checkpoint_path = save_checkpoint(
+                args.output,
+                update=update,
+                model=run.model,
+                optimizers=run.optimizers,
+                train_loader=run.train_loader,
+                fingerprint=run.fingerprint or {},
+                tracker_state=tracker.checkpoint_state(),
+                args=args,
+                keep=getattr(args, "keep_checkpoints", 2),
+                rank=run.rank,
+                world_size=run.world_size,
+                device=run.device,
+            )
+            checkpoint_seconds = time.perf_counter() - then
+            tracker.report(
+                update,
+                scale,
+                log_train=False,
+                checkpoint_path=checkpoint_path,
+                checkpoint_seconds=None if checkpoint_path is None else checkpoint_seconds,
+                checkpoint_failed=checkpoint_path is None,
+            )
 
 
 def run_pretraining(
@@ -340,6 +510,11 @@ def run_pretraining(
     exit_code = 1
     try:
         run = prepare_run(args, rank, world_size, device)
+        if run.already_complete:
+            if rank == 0:
+                print(f"run in {args.output} is already complete; nothing to do", flush=True)
+            exit_code = 0
+            return
         tracker = start_tracker(run)
         print_run_summary(run)
         execute_updates(run, tracker)

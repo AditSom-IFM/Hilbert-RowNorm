@@ -63,6 +63,13 @@ def validate_arguments(args: argparse.Namespace, world_size: int) -> None:
         raise ValueError("max_gradient_norm must be finite and positive")
     if args.eval_tokens < 1:
         raise ValueError("eval_tokens must be positive")
+    save_every = getattr(args, "save_every", 0)
+    if save_every < 0:
+        raise ValueError("save_every must be non-negative")
+    if getattr(args, "keep_checkpoints", 2) < 1:
+        raise ValueError("keep_checkpoints must be positive")
+    if getattr(args, "resume", False) and save_every < 1:
+        raise ValueError("--resume requires --save-every > 0 so the run writes checkpoints")
     diameter_every_log = getattr(args, "exact_head_diameter_every_log", False)
     diameter_block_rows = getattr(args, "exact_head_diameter_block_rows", 4_096)
     hilbert_probe_tokens = getattr(args, "hilbert_step_probe_tokens", 0)

@@ -389,6 +389,9 @@ def test_max_steps_truncates_zero_based_updates_without_shortening_schedule(
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
+        def identity(self) -> str:
+            return "fake data"
+
     class FakeHeadGeometry:
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass

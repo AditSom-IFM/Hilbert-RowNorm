@@ -826,3 +826,40 @@ def test_local_metric_write_failure_propagates_and_allows_failed_run_cleanup(tra
     tracker.finish(0, 1)
     assert run.exit_code == 1
     assert tracker._metrics_file.closed
+
+
+def test_truncate_metrics_keeps_records_up_to_the_checkpoint(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    lines = [json.dumps({"progress/update": update, "value": update}) for update in (1, 2, 3, 4)]
+    path.write_text("\n".join(lines) + '\n{"progress/upd')
+
+    removed = tracking_module.truncate_metrics(path, 2)
+
+    assert path.read_text().splitlines() == lines[:2]
+    assert removed == [*lines[2:], '{"progress/upd']
+    assert tracking_module.truncate_metrics(tmp_path / "missing.jsonl", 2) == []
+
+
+def test_truncate_metrics_refuses_a_damaged_record_before_the_last_line(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    original = '{"progress/update": 1}\nnot json\n{"progress/update": 3}\n'
+    path.write_text(original)
+    with pytest.raises(ValueError, match="line 2 is not a metrics record"):
+        tracking_module.truncate_metrics(path, 3)
+    assert path.read_text() == original
+
+
+def test_resumed_wandb_identity_reuses_the_saved_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tracking_module.INHERITED_RUN_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    assert tracking_module.resumed_wandb_identity("new-training", "abc123") == {
+        "id": "abc123",
+        "resume": "allow",
+    }
+    with pytest.raises(ValueError, match="run ID saved in the checkpoint"):
+        tracking_module.resumed_wandb_identity("new-training", "")
+    with pytest.raises(ValueError, match="curated paper project"):
+        tracking_module.resumed_wandb_identity("Hilbert-RowNorm", "abc123")
+    monkeypatch.setenv("WANDB_RUN_ID", "other")
+    with pytest.raises(ValueError, match="requires unsetting WANDB_RUN_ID"):
+        tracking_module.resumed_wandb_identity("new-training", "abc123")
