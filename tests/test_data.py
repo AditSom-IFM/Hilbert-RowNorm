@@ -101,3 +101,113 @@ def test_validation_is_a_fixed_sequential_prefix(tmp_path: Path) -> None:
     validation.reset()
     actual = validation.next_batch()
     assert all(torch.equal(a, b) for a, b in zip(actual, expected, strict=True))
+
+
+def _three_uneven_shards(root: Path) -> None:
+    for index, tokens in enumerate((97, 161, 65)):
+        start = 1_000 * index
+        write_shard(root / f"train_{index}.bin", np.arange(start, start + tokens, dtype=np.uint16))
+
+
+def _updates(loader: FineWebBatchLoader, count: int, micro_steps: int = 1) -> list[torch.Tensor]:
+    return [
+        torch.cat([loader.next_batch()[0] for _ in range(micro_steps)])
+        for _ in range(count)
+    ]
+
+
+def test_saved_position_continues_the_exact_batch_sequence(tmp_path: Path) -> None:
+    _three_uneven_shards(tmp_path)
+    common = dict(root=tmp_path, pattern="*.bin", batch_size=8, sequence_length=4, seed=7)
+    reference = FineWebBatchLoader(**common)
+    states = []
+    batches = []
+    # 3 + 5 + 2 optimizer batches per epoch: 30 updates cross shard and epoch boundaries.
+    for _ in range(30):
+        states.append(reference.state_dict())
+        batches.append(reference.next_batch()[0])
+    assert {state["epoch"] for state in states} == {0, 1, 2}
+
+    for start in range(30):
+        resumed = FineWebBatchLoader(**common)
+        resumed.load_state_dict(states[start])
+        assert resumed.state_dict() == states[start]
+        for expected in batches[start:]:
+            assert torch.equal(resumed.next_batch()[0], expected)
+
+
+def test_saved_position_is_portable_across_microbatch_and_rank_splits(tmp_path: Path) -> None:
+    _three_uneven_shards(tmp_path)
+    common = dict(root=tmp_path, pattern="*.bin", sequence_length=4, seed=7)
+    whole = FineWebBatchLoader(batch_size=4, **common)
+    _updates(whole, 6)
+    state = whole.state_dict()
+    expected = _updates(whole, 8)
+
+    accumulated = FineWebBatchLoader(batch_size=2, gradient_accumulation_steps=2, **common)
+    accumulated.load_state_dict(state)
+    for actual, update in zip(_updates(accumulated, 8, micro_steps=2), expected, strict=True):
+        assert torch.equal(actual, update)
+
+    ranks = [
+        FineWebBatchLoader(
+            batch_size=1, rank=rank, world_size=2, gradient_accumulation_steps=2, **common
+        )
+        for rank in range(2)
+    ]
+    for loader in ranks:
+        loader.load_state_dict(state)
+    for update in expected:
+        rows = []
+        for _ in range(2):
+            rows.extend(loader.next_batch()[0] for loader in ranks)
+        assert torch.equal(torch.cat(rows), update)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"seed": 8}, "different data order"),
+        ({"optimizer_batch_size": 8}, "different data order"),
+        ({"shards": 2}, "different data order"),
+        ({"shard_position": 3}, "out of range"),
+        ({"block_position": 2}, "optimizer-batch boundary"),
+        ({"block_position": 400}, "optimizer-batch boundary"),
+        ({"epoch": -1}, "non-negative integers"),
+        ({"epoch": 1.0}, "non-negative integers"),
+        ({"extra": 0}, "unexpected keys"),
+    ],
+)
+def test_inconsistent_saved_positions_are_rejected(tmp_path: Path, change, message) -> None:
+    _three_uneven_shards(tmp_path)
+    common = dict(
+        root=tmp_path,
+        pattern="*.bin",
+        batch_size=2,
+        sequence_length=4,
+        seed=7,
+        gradient_accumulation_steps=2,
+    )
+    state = {**FineWebBatchLoader(**common).state_dict(), **change}
+    with pytest.raises(ValueError, match=message):
+        FineWebBatchLoader(**common).load_state_dict(state)
+
+
+def test_validation_loader_cannot_resume_and_identity_ignores_the_directory(
+    tmp_path: Path,
+) -> None:
+    first, second = tmp_path / "a", tmp_path / "b"
+    for root in (first, second):
+        root.mkdir()
+        _three_uneven_shards(root)
+    common = dict(pattern="*.bin", batch_size=2, sequence_length=4)
+    validation = FineWebBatchLoader(first, shuffle=False, **common)
+    with pytest.raises(ValueError, match="shuffled training loader"):
+        validation.load_state_dict(validation.state_dict())
+    assert FineWebBatchLoader(first, **common).identity() == FineWebBatchLoader(
+        second, **common
+    ).identity()
+    write_shard(second / "train_2.bin", np.arange(66, dtype=np.uint16))
+    assert FineWebBatchLoader(first, **common).identity() != FineWebBatchLoader(
+        second, **common
+    ).identity()

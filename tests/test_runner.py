@@ -134,7 +134,11 @@ def test_prepare_run_preserves_deterministic_construction_order(
         global_tokens_per_batch = 32
 
         def __init__(self, root, pattern, **kwargs) -> None:
+            self.pattern = pattern
             events.append(("loader", pattern, kwargs))
+
+        def identity(self) -> str:
+            return f"identity of {self.pattern}"
 
     monkeypatch.setattr(runner, "FineWebBatchLoader", FakeLoader)
     monkeypatch.setattr(
@@ -242,6 +246,14 @@ def test_prepare_run_preserves_deterministic_construction_order(
     assert prepared.optimizers is optimizers
     assert prepared.head_geometry is geometry
     assert prepared.run_config == {"purpose": "test"}
+    assert prepared.fingerprint == {
+        "purpose": "test",
+        "train_data_identity": "identity of fineweb_train_*.bin",
+        "validation_data_identity": "identity of fineweb_val_*.bin",
+    }
+    assert prepared.resume is None
+    assert prepared.start_update == 0
+    assert not prepared.already_complete
 
 
 def test_prepare_run_rejects_the_final_parsed_output_before_allocating_resources(
@@ -367,6 +379,9 @@ def test_final_update_collects_all_retained_outputs(
         def report(self, update: int, scale: float, **kwargs) -> None:
             events.append(("tracker_report", update, scale, kwargs))
 
+        def checkpoint_state(self) -> dict[str, object]:
+            return {"tracker": "state"}
+
     args = Namespace(
         log_every=100,
         min_lr_ratio=0.1,
@@ -375,6 +390,7 @@ def test_final_update_collects_all_retained_outputs(
         eval_every=100,
         hilbert_step_probe_tokens=8,
         save_every=100,
+        keep_checkpoints=3,
         output=tmp_path / "run",
     )
     run = runner.PreparedRun(
@@ -394,6 +410,7 @@ def test_final_update_collects_all_retained_outputs(
         actual_val_tokens=96,
         device_name="CPU",
         run_config={},
+        fingerprint={"fingerprint": 1},
     )
     tracker = FakeTracker()
 
@@ -429,11 +446,25 @@ def test_final_update_collects_all_retained_outputs(
         return 4.0, "hilbert-rms"
 
     monkeypatch.setattr(runner, "evaluate", evaluate)
-    def save_checkpoint(path, model, optimizers, step, received_args, rank):
-        assert model is base_model
-        assert optimizers is run.optimizers
-        assert received_args is args
-        events.append(("checkpoint", path.name, step, rank))
+    saved = tmp_path / "run" / "checkpoints" / "update-00000001.pt"
+
+    def save_checkpoint(output, **kwargs):
+        assert output == args.output
+        assert kwargs == {
+            "update": 1,
+            "model": base_model,
+            "optimizers": run.optimizers,
+            "train_loader": train_loader,
+            "fingerprint": {"fingerprint": 1},
+            "tracker_state": {"tracker": "state"},
+            "args": args,
+            "keep": 3,
+            "rank": 0,
+            "world_size": 1,
+            "device": torch.device("cpu"),
+        }
+        events.append("checkpoint")
+        return saved
 
     monkeypatch.setattr(runner, "save_checkpoint", save_checkpoint)
     clock = iter((10.0, 12.0, 20.0, 23.0))
@@ -450,23 +481,36 @@ def test_final_update_collects_all_retained_outputs(
         "diameter",
         "head_step",
         "evaluate",
+        "tracker_report",
         "checkpoint",
         "tracker_report",
     ]
-    report = events[-1]
+    report = events[-3]
     assert isinstance(report, tuple)
-    assert report[3]["head_diameter"] == 0.25
-    assert report[3]["validation_hilbert"] == "hilbert-rms"
-    assert report[3]["validation_seconds"] == 2.0
-    assert report[3]["checkpoint_seconds"] == 3.0
-    assert report[3]["checkpoint_path"] == tmp_path / "run" / "final.pt"
+    assert report[1:3] == (1, 0.5)
+    assert report[3] == {
+        "log_train": True,
+        "head_diameter": 0.25,
+        "validation_loss": 4.0,
+        "validation_hilbert": "hilbert-rms",
+        "validation_seconds": 2.0,
+    }
+    checkpoint_report = events[-1]
+    assert isinstance(checkpoint_report, tuple)
+    assert checkpoint_report[1:3] == (1, 0.5)
+    assert checkpoint_report[3] == {
+        "log_train": False,
+        "checkpoint_path": saved,
+        "checkpoint_seconds": 3.0,
+        "checkpoint_failed": False,
+    }
 
 
 def test_run_pretraining_finishes_success_before_destroy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[object] = []
-    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3))
+    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3), already_complete=False)
 
     class FakeTracker:
         def finish(self, updates: int, exit_code: int) -> None:
@@ -515,7 +559,7 @@ def test_run_pretraining_reports_failure_before_destroy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[object] = []
-    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3))
+    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3), already_complete=False)
 
     class FakeTracker:
         def finish(self, updates: int, exit_code: int) -> None:
@@ -550,7 +594,7 @@ def test_tracking_shutdown_failure_preserves_training_error_and_always_destroys(
     fail_training: bool,
 ) -> None:
     events: list[object] = []
-    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3))
+    prepared = SimpleNamespace(plan=SimpleNamespace(run_steps=3), already_complete=False)
     training_error = ValueError("training failed")
     finish_error = RuntimeError("tracking shutdown failed")
 

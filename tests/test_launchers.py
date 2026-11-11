@@ -572,3 +572,27 @@ def test_runner_refuses_an_existing_run_directory(launch_environment: dict[str, 
     assert "refusing to reuse existing run directory" in result.stderr
     assert checkpoint.read_bytes() == b"previous checkpoint"
     assert not Path(env["MOCK_TRAINING"]).exists()
+
+
+def test_runner_continues_an_existing_run_directory_with_resume(
+    launch_environment: dict[str, str],
+) -> None:
+    env = launch_environment
+    env.update(MICRO_BATCH="8", OUTPUT_ROOT=f"{env['HILBERT_STORAGE_ROOT']}/direct")
+    output = Path(env["OUTPUT_ROOT"]) / "640m" / "muon" / "requeued-run"
+    checkpoint = output / "checkpoints" / "update-00000010.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"resumable state")
+
+    subprocess.run(
+        ["bash", str(SCRIPTS / "run.sh"), "640m", "muon", "requeued-run", "--resume"],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    arguments = json.loads(Path(env["MOCK_TRAINING"]).read_text())["arguments"]
+    assert arguments[arguments.index("--output") + 1] == str(output)
+    assert arguments[-1] == "--resume"
+    assert checkpoint.read_bytes() == b"resumable state"

@@ -34,8 +34,16 @@ if [[ ! -w ${output_root} ]]; then
   exit 1
 fi
 output=${output_root}/${model}/${optimizer}/${run_id}
-if [[ -e ${output} ]]; then
-  echo "refusing to reuse existing run directory: ${output}" >&2
+# --resume continues the run in this directory from its newest checkpoint, so
+# a requeued job must reuse the same RUN_ID.
+resume=false
+for argument in "$@"; do
+  if [[ ${argument} == --resume ]]; then
+    resume=true
+  fi
+done
+if [[ -e ${output} && ${resume} != true ]]; then
+  echo "refusing to reuse existing run directory: ${output}; pass --resume to continue it" >&2
   exit 1
 fi
 

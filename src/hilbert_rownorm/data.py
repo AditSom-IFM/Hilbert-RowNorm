@@ -159,6 +159,66 @@ class FineWebBatchLoader:
         self._shard_position = 0
         self._open_shard()
 
+    def identity(self) -> str:
+        """Hash the shard names and token counts this loader reads, not their paths."""
+
+        listing = "".join(f"{shard.path.name}\t{shard.num_tokens}\n" for shard in self.shards)
+        return hashlib.sha256(listing.encode()).hexdigest()
+
+    def _layout(self) -> dict[str, int]:
+        return {
+            "seed": self.seed,
+            "shards": len(self.shards),
+            "optimizer_batch_size": self.optimizer_batch_size,
+        }
+
+    def state_dict(self) -> dict[str, int]:
+        """Return the position of the next batch; it is the same on every rank."""
+
+        return {
+            **self._layout(),
+            "epoch": self.epoch,
+            "shard_position": self._shard_position,
+            "block_position": self._block_position,
+        }
+
+    def load_state_dict(self, state: dict[str, int]) -> None:
+        """Continue from a position saved at an optimizer-update boundary.
+
+        The position counts sequence blocks, so it stays valid when the
+        microbatch size or rank count changes but the optimizer batch does not.
+        """
+
+        if not self.shuffle:
+            raise ValueError("only the shuffled training loader can resume a position")
+        if set(state) != set(self.state_dict()):
+            raise ValueError(f"loader state has unexpected keys: {sorted(state)}")
+        if any(type(value) is not int or value < 0 for value in state.values()):
+            raise ValueError(f"loader state values must be non-negative integers: {state}")
+        mismatched = {
+            key: (state[key], value)
+            for key, value in self._layout().items()
+            if state[key] != value
+        }
+        if mismatched:
+            raise ValueError(
+                f"loader state was saved for a different data order (saved, current): {mismatched}"
+            )
+        if state["shard_position"] >= len(self.shards):
+            raise ValueError(f"shard position {state['shard_position']} is out of range")
+        self.reset(state["epoch"])
+        if state["shard_position"]:
+            self._close()
+            self._shard_position = state["shard_position"]
+            self._open_shard()
+        block_position = state["block_position"]
+        if block_position > len(self._block_order) or block_position % self.optimizer_batch_size:
+            raise ValueError(
+                f"block position {block_position} is not an optimizer-batch boundary "
+                f"of a shard holding {len(self._block_order)} blocks"
+            )
+        self._block_position = block_position
+
     def next_batch(self) -> tuple[Tensor, Tensor]:
         while self._block_position + self.global_batch_size > len(self._block_order):
             self._advance_shard()

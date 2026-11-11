@@ -16,6 +16,7 @@ import torch.distributed as dist
 from torch import Tensor
 from torch.optim import Optimizer
 
+from .checkpointing import ResumePoint
 from .hilbert_diagnostics import HilbertStepRms
 from .tracking_records import (
     add_checkpoint_metrics,
@@ -37,9 +38,7 @@ INHERITED_RUN_VARIABLES = (
 )
 
 
-def fresh_wandb_identity(project: str) -> dict[str, str]:
-    """Prevent fresh training from resuming a run or modifying the paper mirror."""
-
+def _check_wandb_target(project: str) -> None:
     if project == "Hilbert-RowNorm":
         raise ValueError(
             "Hilbert-RowNorm is the curated paper project; use "
@@ -47,8 +46,57 @@ def fresh_wandb_identity(project: str) -> dict[str, str]:
         )
     inherited = [name for name in INHERITED_RUN_VARIABLES if os.environ.get(name)]
     if inherited:
-        raise ValueError("fresh training requires unsetting " + ", ".join(inherited))
+        raise ValueError("training requires unsetting " + ", ".join(inherited))
+
+
+def fresh_wandb_identity(project: str) -> dict[str, str]:
+    """Prevent fresh training from resuming a run or modifying the paper mirror."""
+
+    _check_wandb_target(project)
     return {"id": uuid4().hex, "resume": "never"}
+
+
+def resumed_wandb_identity(project: str, run_id: str) -> dict[str, str]:
+    """Continue the W&B run a checkpoint names, or create it if it never synced."""
+
+    _check_wandb_target(project)
+    if not run_id:
+        raise ValueError("a resumed W&B run needs the run ID saved in the checkpoint")
+    return {"id": run_id, "resume": "allow"}
+
+
+def truncate_metrics(path: Path, update: int) -> list[str]:
+    """Keep only records up to ``update``; return the removed lines.
+
+    A final line cut short by a crash is dropped. Any other unreadable line
+    is an error, because it means the file is not this tracker's output.
+    """
+
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    kept: list[str] = []
+    removed: list[str] = []
+    for index, line in enumerate(lines):
+        try:
+            record_update = json.loads(line)["progress/update"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            if index == len(lines) - 1:
+                removed.append(line)
+                break
+            raise ValueError(f"{path} line {index + 1} is not a metrics record") from error
+        (kept if record_update <= update else removed).append(line)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("".join(line + "\n" for line in kept))
+    os.replace(temporary, path)
+    return removed
+
+
+def _first_free(directory: Path, stem: str, suffix: str) -> Path:
+    index = 1
+    while (directory / f"{stem}-{index}{suffix}").exists():
+        index += 1
+    return directory / f"{stem}-{index}{suffix}"
 
 
 def optimizer_configuration(optimizers: list[Optimizer]) -> list[dict[str, Any]]:
@@ -116,6 +164,7 @@ class Tracker:
         mode: str,
         directory: Path,
         config: dict[str, Any],
+        resume: ResumePoint | None = None,
     ) -> None:
         self.rank = rank
         self.device = device
@@ -132,6 +181,21 @@ class Tracker:
         self.last_log_update = 0
         self.last_validation_loss: float | None = None
         self.last_validation_hilbert: HilbertStepRms | None = None
+        self.elapsed_before = 0.0
+        self.resumes = 0
+        self.wandb_run_id: str | None = None
+        if resume is not None:
+            saved = resume.tracker
+            self.last_log_update = resume.update
+            self.elapsed_before = float(saved.get("elapsed_seconds", 0.0))
+            self.last_validation_loss = saved.get("last_validation_loss")
+            hilbert = saved.get("last_validation_hilbert")
+            if hilbert is not None:
+                self.last_validation_hilbert = HilbertStepRms(
+                    rms=float(hilbert["rms"]), tokens=int(hilbert["tokens"])
+                )
+            self.resumes = int(saved.get("resumes", 0)) + 1
+            self.wandb_run_id = saved.get("wandb_run_id")
         self.run = None
         self.directory = directory
         self._metrics_file: TextIO | None = None
@@ -139,10 +203,13 @@ class Tracker:
         error = None
         if rank == 0:
             try:
-                self._metrics_file = (directory / "metrics.jsonl").open("x")
-                with (directory / "config.json").open("x") as config_file:
-                    json.dump(config, config_file, indent=2, allow_nan=False)
-                    config_file.write("\n")
+                if resume is None:
+                    self._metrics_file = (directory / "metrics.jsonl").open("x")
+                    with (directory / "config.json").open("x") as config_file:
+                        json.dump(config, config_file, indent=2, allow_nan=False)
+                        config_file.write("\n")
+                else:
+                    self._continue_directory(resume, config)
                 if mode != "disabled":
                     self._start_wandb(
                         project=project,
@@ -153,6 +220,8 @@ class Tracker:
                         directory=directory,
                         config=config,
                     )
+                if resume is not None:
+                    self._record_resume(resume)
             except Exception as exception:
                 error = f"{type(exception).__name__}: {exception}"
                 self._finish_wandb_after_error()
@@ -166,6 +235,89 @@ class Tracker:
             raise RuntimeError(error)
         self.started = self.last_log_time = time.perf_counter()
 
+    def _continue_directory(self, resume: ResumePoint, config: dict[str, Any]) -> None:
+        """Rewind local records to the checkpoint and note what changed."""
+
+        directory = self.directory
+        removed = truncate_metrics(directory / "metrics.jsonl", resume.update)
+        if removed:
+            discarded = _first_free(directory, "metrics.discarded", ".jsonl")
+            discarded.write_text("".join(line + "\n" for line in removed))
+        self._metrics_file = (directory / "metrics.jsonl").open("a")
+
+        config_path = directory / "config.json"
+        changes: dict[str, list[Any]] = {}
+        if config_path.exists():
+            original = json.loads(config_path.read_text())
+            changes = {
+                key: [original.get(key), value]
+                for key, value in json.loads(json.dumps(config)).items()
+                if original.get(key) != value
+            }
+        else:
+            with config_path.open("x") as config_file:
+                json.dump(config, config_file, indent=2, allow_nan=False)
+                config_file.write("\n")
+        summary = directory / "summary.json"
+        if summary.exists():
+            os.replace(summary, _first_free(directory, "summary.before-resume", ".json"))
+        # Count earlier resumes from the log, which also covers attempts that
+        # crashed before writing a checkpoint of their own.
+        log_path = directory / "resumes.jsonl"
+        if log_path.exists():
+            self.resumes = len(log_path.read_text().splitlines()) + 1
+        entry = {
+            "resume": self.resumes,
+            "from_update": resume.update,
+            "checkpoint": resume.path.name,
+            "discarded_records": len(removed),
+            "config_changes": changes,
+        }
+        with log_path.open("a") as log:
+            log.write(json.dumps(entry, allow_nan=False) + "\n")
+
+    def _record_resume(self, resume: ResumePoint) -> None:
+        tokens = resume.update * self.tokens_per_step
+        self._write(
+            {
+                "progress/update": resume.update,
+                "progress/tokens": tokens,
+                "progress/tpp": tokens / self.parameter_count,
+                "events/resume": 1,
+            }
+        )
+        print(f"resumed from {resume.path} at update {resume.update}", flush=True)
+        if self.run is not None:
+            self.run.summary.update(
+                {"resumes": self.resumes, "resumed_from_update": resume.update}
+            )
+
+    def _write(self, record: dict[str, Any]) -> None:
+        assert self._metrics_file is not None
+        self._metrics_file.write(json.dumps(record, allow_nan=False) + "\n")
+        self._metrics_file.flush()
+        if self.run is not None:
+            self.run.log(record)
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Values a resumed tracker needs; meaningful on rank zero."""
+
+        hilbert = self.last_validation_hilbert
+        return {
+            "wandb_run_id": self.wandb_run_id,
+            "elapsed_seconds": self.elapsed_seconds(),
+            "last_validation_loss": self.last_validation_loss,
+            "last_validation_hilbert": None
+            if hilbert is None
+            else {"rms": hilbert.rms, "tokens": hilbert.tokens},
+            "resumes": self.resumes,
+        }
+
+    def elapsed_seconds(self) -> float:
+        """Training time across attempts, excluding work redone after a resume."""
+
+        return self.elapsed_before + time.perf_counter() - self.started
+
     def _start_wandb(
         self,
         *,
@@ -177,7 +329,11 @@ class Tracker:
         directory: Path,
         config: dict[str, Any],
     ) -> None:
-        identity = fresh_wandb_identity(project)
+        identity = (
+            fresh_wandb_identity(project)
+            if self.wandb_run_id is None
+            else resumed_wandb_identity(project, self.wandb_run_id)
+        )
         import wandb
 
         self.run = wandb.init(
@@ -195,6 +351,7 @@ class Tracker:
         )
         if self.run is None:
             raise RuntimeError("wandb.init() did not return a run")
+        self.wandb_run_id = identity["id"]
         self.run.define_metric("progress/tokens")
         self.run.define_metric("progress/update")
         for prefix in ("train", "validation", "optimizer", "performance", "memory", "events"):
@@ -248,12 +405,14 @@ class Tracker:
         validation_seconds: float | None = None,
         checkpoint_path: Path | None = None,
         checkpoint_seconds: float | None = None,
+        checkpoint_failed: bool = False,
     ) -> None:
         if (
             not log_train
             and head_diameter is None
             and validation_loss is None
             and checkpoint_path is None
+            and not checkpoint_failed
         ):
             return
         train = self._training_metrics.collect() if log_train else None
@@ -286,7 +445,7 @@ class Tracker:
                 previous_update=self.last_log_update,
                 tokens_per_step=self.tokens_per_step,
                 interval_seconds=seconds,
-                elapsed_seconds=now - self.started,
+                elapsed_seconds=self.elapsed_before + now - self.started,
             )
             print(
                 f"step={update} tokens={tokens} loss={train.loss:.5f} "
@@ -320,11 +479,9 @@ class Tracker:
                         "checkpoint_update": update,
                     }
                 )
-        assert self._metrics_file is not None
-        self._metrics_file.write(json.dumps(record, allow_nan=False) + "\n")
-        self._metrics_file.flush()
-        if self.run is not None:
-            self.run.log(record)
+        if checkpoint_failed:
+            record["events/checkpoint_failed"] = 1
+        self._write(record)
 
     def finish(self, updates: int, exit_code: int) -> None:
         if self.rank != 0:
@@ -336,7 +493,7 @@ class Tracker:
                     updates=updates,
                     tokens_per_step=self.tokens_per_step,
                     parameter_count=self.parameter_count,
-                    elapsed_seconds=time.perf_counter() - self.started,
+                    elapsed_seconds=self.elapsed_seconds(),
                     validation_loss=self.last_validation_loss,
                     validation_hilbert=self.last_validation_hilbert,
                 )
