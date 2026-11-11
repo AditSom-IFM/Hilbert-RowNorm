@@ -178,10 +178,51 @@ ranges are summed in FP64. CPU runs use FP32 compute. New run metadata records
 these distinctions; the old mirror's shorter precision label does not imply
 FP32 matrix multiplication.
 
-Checkpoint files are inspection snapshots, not resumable training state: the
-trainer does not restore data-loader position or RNG state. Paper launches
-disable checkpoints and Slurm requeue. Do not use an old output directory as
-a resume mechanism.
+## Checkpoints and resuming
+
+Long runs can continue after a crash or a Slurm preemption. Pass
+`--save-every N` to write a checkpoint every N updates and at the end, and
+`--resume` to continue from the newest checkpoint in `--output`:
+
+```bash
+# Requeued jobs must reuse the same RUN_ID, so the run keeps its directory.
+MICRO_BATCH=8 scripts/run.sh 640m muon my-run --save-every 2000 --resume [TRAIN_ARGS...]
+```
+
+With `--resume`, the output directory may already exist. If it has a
+checkpoint, training continues from it; if not, earlier records are moved to
+`abandoned/attempt-K/` and the run starts over. A run whose final checkpoint
+and `summary.json` show it finished exits without training.
+
+A checkpoint (`checkpoints/update-XXXXXXXX.pt`) holds what the next update
+depends on: model weights, every optimizer's state, the training-data
+position, each rank's random-number state, the W&B run ID, and the elapsed
+training time. On CPU, a crashed and resumed run matches an uninterrupted
+run bit for bit; [`tests/test_resume.py`](tests/test_resume.py) checks this
+for each head and query/key optimizer, and for two ranks.
+
+- Files are written to a temporary name, synced, then renamed, so a crash
+  never leaves a partial checkpoint under the final name. `--keep-checkpoints`
+  (default 2) keeps the newest ones. A 640M checkpoint is about 5 GiB.
+- If a write fails, for example on a full disk, training continues, the
+  earlier checkpoints stay, and the metrics record `events/checkpoint_failed`.
+- An unreadable checkpoint is renamed `*.corrupt` and the previous one is used.
+- A run resumes only if its configuration matches the checkpoint. The
+  microbatch size, rank count, `--max-steps`, logging, evaluation and
+  checkpoint cadence, and diagnostics may change; the dataset, model,
+  optimizer recipe and overrides, batch size, schedule, seed, and evaluation
+  tokens may not. Each resume is recorded in `resumes.jsonl`, with any
+  changed settings.
+- `metrics.jsonl` is cut back to the checkpoint's update; the removed lines go
+  to `metrics.discarded-K.jsonl`. W&B continues the same run, so the updates
+  between the checkpoint and the crash appear twice there; `events/resume`
+  marks where the second copy starts.
+- Work done after the last checkpoint is repeated. A Slurm preemption signal
+  does not trigger an extra save, so choose `--save-every` for the loss you
+  accept; at 640M, 2000 updates are about 55 minutes.
+
+The paper launcher keeps `--save-every 0` and starts each Slurm attempt in a
+new directory, as the paper runs did.
 
 ## W&B records
 
